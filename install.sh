@@ -3,15 +3,23 @@ set -e
 
 # ============================================================
 # install.sh — установка sync-folders
-# Определяет платформу, скачивает готовый бинарник и
-# устанавливает в PATH.
 #
-# Базовый URL (захардкожен):
-BASE_URL="https://github.com/mp-org/sync-folders/releases/latest/download"
+# Использование (user-friendly):
+#   curl -fsSL https://raw.githubusercontent.com/pavlovma007/sync-folders/refs/heads/main/install.sh | sh
+#
+#   # С конкретной версией:
+#   VERSION=0.1 sh -c "$(curl -fsSL https://raw.githubusercontent.com/pavlovma007/sync-folders/refs/heads/main/install.sh)"
+#
+# Скрипт сам определит ОС и архитектуру, скачает нужный
+# бинарник из GitHub Releases и установит в /usr/local/bin.
 # ============================================================
 
+# Настройки (можно переопределить через окружение)
+REPO="${REPO:-pavlovma007/sync-folders}"
+VERSION="${VERSION:-latest}"
+INSTALL_DIR="${INSTALL_DIR:-}"
+
 BINARY_NAME="sync-folders"
-INSTALL_PATH=""
 
 info()  { echo -e "\033[0;32m[INFO]\033[0m $1"; }
 warn()  { echo -e "\033[0;33m[WARN]\033[0m $1"; }
@@ -47,15 +55,29 @@ detect_arch() {
 }
 
 # -------------------------------------------------------
-# 3. Определяем путь установки (Termux vs обычный Linux)
+# 3. Определяем путь установки
 # -------------------------------------------------------
 detect_install_path() {
+    # Если пользователь явно указал
+    if [ -n "$INSTALL_DIR" ]; then
+        echo "$INSTALL_DIR"
+        return
+    fi
     # Termux
     if [ -n "$PREFIX" ] && [ -d "$PREFIX/bin" ]; then
         echo "$PREFIX/bin"
         return
     fi
-    # Обычная система
+    # macOS — ~/bin или /usr/local/bin
+    if [ "$(uname -s)" = "Darwin" ]; then
+        if [ -d "$HOME/bin" ] && [[ ":$PATH:" == *":$HOME/bin:"* ]]; then
+            echo "$HOME/bin"
+            return
+        fi
+        echo "/usr/local/bin"
+        return
+    fi
+    # Linux
     echo "/usr/local/bin"
 }
 
@@ -95,7 +117,13 @@ main() {
         ext=".exe"
     fi
 
+    # Формируем URL для скачивания
     suffix="${os}-${arch}${ext}"
+    if [ "$VERSION" = "latest" ]; then
+        BASE_URL="https://github.com/${REPO}/releases/latest/download"
+    else
+        BASE_URL="https://github.com/${REPO}/releases/download/${VERSION}"
+    fi
     url="${BASE_URL}/sync-folders-${suffix}"
 
     INSTALL_PATH=$(detect_install_path)
@@ -108,7 +136,15 @@ main() {
         exit 1
     fi
 
-    # Проверка прав на запись в целевой каталог
+    # Создаём целевую директорию, если её нет
+    if [ ! -d "$INSTALL_PATH" ]; then
+        mkdir -p "$INSTALL_PATH" 2>/dev/null || true
+    fi
+
+    # Скачивание
+    info "Скачивание: $url"
+    info "Установка в: $dest_file"
+
     if [ ! -w "$INSTALL_PATH" ]; then
         warn "Нет прав на запись в $INSTALL_PATH. Пробуем через sudo..."
         if [ "$downloader" = "curl" ]; then
@@ -118,7 +154,6 @@ main() {
         fi
         sudo chmod 755 "$dest_file"
     else
-        info "Скачивание: $url"
         if [ "$downloader" = "curl" ]; then
             curl -fsSL -o "$dest_file" "$url"
         else
@@ -130,6 +165,13 @@ main() {
     echo ""
     info "Установлено: $dest_file"
     info "Запуск: $(basename "$dest_file") --help"
+
+    # Проверяем, что директория установки в PATH
+    case ":$PATH:" in
+        *:"$INSTALL_PATH":*) ;;
+        *) warn "$INSTALL_PATH не в PATH. Добавьте в ~/.bashrc:"
+           warn "  export PATH=\"\$PATH:$INSTALL_PATH\"" ;;
+    esac
 }
 
 main "$@"
