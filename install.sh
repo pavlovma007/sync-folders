@@ -86,11 +86,11 @@ detect_install_path() {
 # -------------------------------------------------------
 detect_downloader() {
     if command -v curl >/dev/null 2>&1; then
-        echo "curl"
+        printf "curl"
     elif command -v wget >/dev/null 2>&1; then
-        echo "wget"
+        printf "wget"
     else
-        echo ""
+        printf ""
     fi
 }
 
@@ -153,9 +153,23 @@ main() {
     fi
 
     if [ "$downloader" = "curl" ]; then
-        $SUDO curl -fsSL -o "$dest_file" "$url"
+        $SUDO curl -fsSL -H "Accept: application/octet-stream" -o "$dest_file" "$url"
     else
-        $SUDO wget -q -O "$dest_file" "$url"
+        $SUDO wget -q --header="Accept: application/octet-stream" -O "$dest_file" "$url"
+    fi
+
+    # Проверка: файл должен быть ELF-бинарником
+    if file "$dest_file" | grep -qi "ELF\|executable\|Mach-O"; then
+        :
+    else
+        warn "Скачанный файл не похож на бинарник. Возможно, неверный URL."
+        warn "  URL: $url"
+        warn "  Размер: $(wc -c < "$dest_file") байт"
+        head -c 200 "$dest_file" 2>/dev/null || true
+        echo ""
+        error "Установка прервана. Проверьте релиз:"
+        error "  https://github.com/${REPO}/releases"
+        exit 1
     fi
     $SUDO chmod 755 "$dest_file"
 
