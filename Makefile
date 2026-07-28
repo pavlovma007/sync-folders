@@ -12,9 +12,24 @@
 #   make build-all  — кросс-компиляция под 8 платформ (через build.sh)
 #
 # Тесты:
-#   33 тестов в 3 пакетах: core (3), filter (4), transport (26)
+#   41 тестов в 3 пакетах: core (8), filter (4), transport (29)
 
-GO_CMD := go
+# Авто-определение Go toolchain
+# Приоритет: GOROOT из .env → go в PATH → toolchain в модульном кеше
+ifneq ($(wildcard .env),)
+    include .env
+    export
+endif
+
+ifdef GOROOT
+    GO_CMD := $(GOROOT)/bin/go
+else
+    GO_CMD := $(shell command -v go 2>/dev/null || echo "")
+    ifeq ($(GO_CMD),)
+        $(error Go not found. Install Go 1.26+ or set GOROOT in .env)
+    endif
+endif
+
 BINARY := sync-folders
 
 .PHONY: help check test test-v test-short build run clean build-all
@@ -31,7 +46,7 @@ help:
 	@echo "  make clean       Удалить собранный бинарник"
 	@echo "  make build-all   Кросс-компиляция под 8 платформ"
 	@echo ""
-	@echo "Тесты: 33 тестов в 3 пакетах (core, filter, transport)"
+	@echo "Тесты: 41 тестов в 3 пакетах (core, filter, transport)"
 	@echo ""
 
 check:

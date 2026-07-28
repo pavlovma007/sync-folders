@@ -15,8 +15,7 @@ type Journal struct {
 	db *sql.DB
 }
 
-// appDBPath возвращает путь к SQLite файлу (дублирует core.AppDBPath,
-// чтобы избежать циклического импорта).
+// appDBPath возвращает путь к SQLite файлу приложения.
 func appDBPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -29,7 +28,7 @@ func appDBPath() (string, error) {
 	return filepath.Join(dir, "config.db"), nil
 }
 
-// Open открывает или создаёт БД журнала.
+// Open открывает или создаёт БД приложения.
 func Open() (*Journal, error) {
 	path, err := appDBPath()
 	if err != nil {
@@ -37,7 +36,7 @@ func Open() (*Journal, error) {
 	}
 	db, err := sql.Open("sqlite3", path)
 	if err != nil {
-		return nil, fmt.Errorf("journal open: %w", err)
+		return nil, fmt.Errorf("db open: %w", err)
 	}
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS sync_log (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,7 +50,14 @@ func Open() (*Journal, error) {
 	)`); err != nil {
 		return nil, fmt.Errorf("journal init: %w", err)
 	}
-	return &Journal{db: db}, nil
+
+	// Инициализация таблиц конфигов
+	j := &Journal{db: db}
+	if err := initConfigTables(j); err != nil {
+		return nil, fmt.Errorf("config tables init: %w", err)
+	}
+
+	return j, nil
 }
 
 // Log записывает событие синхронизации.

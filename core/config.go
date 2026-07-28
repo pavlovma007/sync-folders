@@ -1,105 +1,136 @@
 package core
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync-folders/db"
 
 	"gopkg.in/yaml.v3"
 )
 
-// ConfigPath — путь к служебной БД приложения.
+// ConfigPath — путь к служебной директории приложения.
 const ConfigPath = ".config/sync-app"
 
-// AppDBPath возвращает путь к SQLite файлу.
-func AppDBPath() (string, error) {
-	home, err := os.UserHomeDir()
+// openDB открывает БД и возвращает Journal.
+func openDB() (*db.Journal, error) {
+	j, err := db.Open()
 	if err != nil {
-		return "", err
+		return nil, fmt.Errorf("open db: %w", err)
 	}
-	dir := filepath.Join(home, ConfigPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "config.db"), nil
+	return j, nil
 }
 
-// LoadConfig загружает состояние из JSON файла (рядом с БД).
+// LoadConfig загружает состояние (папки + конфиги) из SQLite.
 func LoadConfig() (*Config, error) {
-	dbPath, err := AppDBPath()
+	j, err := openDB()
 	if err != nil {
 		return nil, err
 	}
-	cfgPath := filepath.Dir(dbPath) + "/state.json"
+	defer j.Close()
 
 	cfg := &Config{
 		Folders: []Folder{},
 		Syncs:   map[string]SyncConfig{},
 	}
 
-	data, err := os.ReadFile(cfgPath)
+	// Загружаем папки
+	folderRecords, err := j.ListFolders()
 	if err != nil {
-		if os.IsNotExist(err) {
-			return cfg, nil // новый, пустой
-		}
-		return nil, err
+		return nil, fmt.Errorf("load folders: %w", err)
+	}
+	for _, fr := range folderRecords {
+		cfg.Folders = append(cfg.Folders, Folder{
+			Name: fr.Name,
+			Path: fr.Path,
+		})
 	}
 
-	if err := json.Unmarshal(data, cfg); err != nil {
-		return nil, fmt.Errorf("load state: %w", err)
+	// Загружаем конфиги
+	configRecords, err := j.ListSyncConfigs()
+	if err != nil {
+		return nil, fmt.Errorf("load configs: %w", err)
 	}
+	for _, cr := range configRecords {
+		cfg.Syncs[cr.Name] = recordToSyncConfig(cr)
+	}
+
 	return cfg, nil
 }
 
-// SaveConfig сохраняет состояние.
+// SaveConfig сохраняет состояние в SQLite.
+// Заменяет все существующие данные новыми.
 func SaveConfig(cfg *Config) error {
-	dbPath, err := AppDBPath()
+	j, err := openDB()
 	if err != nil {
 		return err
 	}
-	cfgPath := filepath.Dir(dbPath) + "/state.json"
+	defer j.Close()
 
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
+	// Очищаем старые данные перед вставкой
+	if err := j.ClearAllFolders(); err != nil {
+		return fmt.Errorf("clear folders: %w", err)
 	}
-	return os.WriteFile(cfgPath, data, 0644)
+	if err := j.ClearAllSyncConfigs(); err != nil {
+		return fmt.Errorf("clear configs: %w", err)
+	}
+
+	// Вставляем папки
+	for _, f := range cfg.Folders {
+		if err := j.AddFolder(f.Name, f.Path); err != nil {
+			return fmt.Errorf("save folder %q: %w", f.Name, err)
+		}
+	}
+
+	// Вставляем конфиги
+	for name, sc := range cfg.Syncs {
+		rec := syncConfigToRecord(name, sc)
+		if err := j.AddSyncConfig(name, rec); err != nil {
+			return fmt.Errorf("save config %q: %w", name, err)
+		}
+	}
+
+	return nil
 }
 
 // AddFolder добавляет папку.
 func AddFolder(name, path string) error {
-	cfg, err := LoadConfig()
+	j, err := openDB()
 	if err != nil {
 		return err
 	}
-	cfg.Folders = append(cfg.Folders, Folder{Name: name, Path: path})
-	return SaveConfig(cfg)
+	defer j.Close()
+	return j.AddFolder(name, path)
 }
 
 // RemoveFolder удаляет папку.
 func RemoveFolder(name string) error {
-	cfg, err := LoadConfig()
+	j, err := openDB()
 	if err != nil {
 		return err
 	}
-	var kept []Folder
-	for _, f := range cfg.Folders {
-		if f.Name != name {
-			kept = append(kept, f)
-		}
-	}
-	cfg.Folders = kept
-	return SaveConfig(cfg)
+	defer j.Close()
+	return j.RemoveFolder(name)
 }
 
 // ListFolders возвращает список папок.
 func ListFolders() ([]Folder, error) {
-	cfg, err := LoadConfig()
+	j, err := openDB()
 	if err != nil {
 		return nil, err
 	}
-	return cfg.Folders, nil
+	defer j.Close()
+
+	records, err := j.ListFolders()
+	if err != nil {
+		return nil, err
+	}
+
+	var result []Folder
+	for _, r := range records {
+		result = append(result, Folder{Name: r.Name, Path: r.Path})
+	}
+	return result, nil
 }
 
 // AddConfig добавляет конфиг из YAML файла.
@@ -116,35 +147,81 @@ func AddConfig(yamlPath string) error {
 		return fmt.Errorf("config missing 'folder' field")
 	}
 
-	cfg, err := LoadConfig()
-	if err != nil {
-		return err
-	}
-	if cfg.Syncs == nil {
-		cfg.Syncs = map[string]SyncConfig{}
-	}
 	// имя конфига = имя файла без .yaml
 	name := filepath.Base(yamlPath)
 	name = name[:len(name)-len(filepath.Ext(name))]
-	cfg.Syncs[name] = sc
-	return SaveConfig(cfg)
+
+	j, err := openDB()
+	if err != nil {
+		return err
+	}
+	defer j.Close()
+
+	rec := syncConfigToRecord(name, sc)
+	return j.AddSyncConfig(name, rec)
 }
 
 // RemoveConfig удаляет конфиг по имени.
 func RemoveConfig(name string) error {
-	cfg, err := LoadConfig()
+	j, err := openDB()
 	if err != nil {
 		return err
 	}
-	delete(cfg.Syncs, name)
-	return SaveConfig(cfg)
+	defer j.Close()
+	return j.RemoveSyncConfig(name)
 }
 
 // ListConfigs возвращает все конфиги.
 func ListConfigs() (map[string]SyncConfig, error) {
-	cfg, err := LoadConfig()
+	j, err := openDB()
 	if err != nil {
 		return nil, err
 	}
-	return cfg.Syncs, nil
+	defer j.Close()
+
+	records, err := j.ListSyncConfigs()
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]SyncConfig, len(records))
+	for _, cr := range records {
+		result[cr.Name] = recordToSyncConfig(cr)
+	}
+	return result, nil
+}
+
+// ─── Конвертеры между db.SyncConfigRecord и core.SyncConfig ───
+
+func recordToSyncConfig(cr db.SyncConfigRecord) SyncConfig {
+	return SyncConfig{
+		Folder:      cr.Folder,
+		Description: cr.Description,
+		Transport: TransportConfig{
+			Type:   cr.TransportType,
+			Config: db.DecodeTransportConfig(cr.TransportConfig),
+		},
+		Sync: SyncSettings{
+			Period:        cr.SyncPeriod,
+			Direction:     Direction(cr.SyncDirection),
+			Conflict:      ConflictMode(cr.SyncConflict),
+			SendFilter:    cr.SyncSendFilter,
+			ReceiveFilter: cr.SyncRecvFilter,
+		},
+	}
+}
+
+func syncConfigToRecord(name string, sc SyncConfig) db.SyncConfigRecord {
+	return db.SyncConfigRecord{
+		Name:            name,
+		Folder:          sc.Folder,
+		Description:     sc.Description,
+		TransportType:   sc.Transport.Type,
+		TransportConfig: db.EncodeTransportConfig(sc.Transport.Config),
+		SyncPeriod:      sc.Sync.Period,
+		SyncDirection:   string(sc.Sync.Direction),
+		SyncConflict:    string(sc.Sync.Conflict),
+		SyncSendFilter:  sc.Sync.SendFilter,
+		SyncRecvFilter:  sc.Sync.ReceiveFilter,
+	}
 }

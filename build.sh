@@ -6,12 +6,66 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 NAME="sync-folders"
 OUT_DIR="$SCRIPT_DIR/build"
 
-# Используем Go из PATH (go.mod управляет toolchain автоматически)
-GO_CMD="go"
-if ! command -v go &>/dev/null; then
-    echo "Go not found in PATH. Install Go 1.26+ from https://go.dev/dl/"
+# ─── Определение Go toolchain ──────────────────────────────
+# Пытаемся найти Go 1.26+ в нескольких местах:
+#   1. go в PATH (если установлен глобально)
+#   2. GOROOT из .env файла
+#   3. toolchain в модульном кеше Go
+#   4. GOROOT из go env (если go доступен)
+#
+# Можно переопределить через переменную окружения GO_CMD.
+
+if [ -z "$GO_CMD" ]; then
+    # Пробуем go в PATH
+    if command -v go &>/dev/null; then
+        # Проверяем, что go может собрать проект (go 1.26+)
+        GO_CMD="go"
+    fi
+
+    # Если .env существует — загружаем GOROOT
+    if [ -f "$SCRIPT_DIR/.env" ]; then
+        set -a
+        source "$SCRIPT_DIR/.env"
+        set +a
+    fi
+
+    # Если GOROOT задан — используем его
+    if [ -n "$GOROOT" ] && [ -x "$GOROOT/bin/go" ]; then
+        GO_CMD="$GOROOT/bin/go"
+    fi
+
+    # Ищем toolchain в модульном кеше
+    if [ -z "$GO_CMD" ] || ! $GO_CMD version &>/dev/null; then
+        TOOLCHAIN_DIRS=(
+            "$HOME/go/pkg/mod/golang.org/toolchain@latest/bin/go"
+            "$HOME/go/pkg/mod/golang.org/"toolchain@*/bin/go
+            "/usr/local/go/bin/go"
+            "/usr/lib/go/bin/go"
+        )
+        for candidate in "${TOOLCHAIN_DIRS[@]}"; do
+            # Для glob-паттерна
+            for f in $candidate; do
+                if [ -x "$f" ]; then
+                    GO_CMD="$f"
+                    break 2
+                fi
+            done
+        done
+    fi
+fi
+
+if [ -z "$GO_CMD" ] || ! $GO_CMD version &>/dev/null; then
+    echo "ERROR: Go toolchain not found."
+    echo ""
+    echo "  Установите Go 1.26+: https://go.dev/dl/"
+    echo "  Или пропишите GOROOT в .env файле:"
+    echo "    echo 'GOROOT=/path/to/go1.26' >> .env"
     exit 1
 fi
+
+GO_VERSION=$($GO_CMD version 2>&1)
+echo "Using: $GO_CMD — $GO_VERSION"
+echo ""
 
 info()  { echo -e "\033[0;32m[INFO]\033[0m $1"; }
 
