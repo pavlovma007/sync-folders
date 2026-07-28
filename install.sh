@@ -85,9 +85,9 @@ detect_install_path() {
 # 4. Выбираем download-утилиту
 # -------------------------------------------------------
 detect_downloader() {
-    if command -v curl &>/dev/null; then
+    if command -v curl >/dev/null 2>&1; then
         echo "curl"
-    elif command -v wget &>/dev/null; then
+    elif command -v wget >/dev/null 2>&1; then
         echo "wget"
     else
         echo ""
@@ -147,20 +147,17 @@ main() {
 
     if [ ! -w "$INSTALL_PATH" ]; then
         warn "Нет прав на запись в $INSTALL_PATH. Пробуем через sudo..."
-        if [ "$downloader" = "curl" ]; then
-            sudo curl -fsSL -o "$dest_file" "$url"
-        else
-            sudo wget -q -O "$dest_file" "$url"
-        fi
-        sudo chmod 755 "$dest_file"
+        SUDO="sudo"
     else
-        if [ "$downloader" = "curl" ]; then
-            curl -fsSL -o "$dest_file" "$url"
-        else
-            wget -q -O "$dest_file" "$url"
-        fi
-        chmod 755 "$dest_file"
+        SUDO=""
     fi
+
+    if [ "$downloader" = "curl" ]; then
+        $SUDO curl -fsSL -o "$dest_file" "$url"
+    else
+        $SUDO wget -q -O "$dest_file" "$url"
+    fi
+    $SUDO chmod 755 "$dest_file"
 
     echo ""
     info "Установлено: $dest_file"

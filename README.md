@@ -842,7 +842,6 @@ make check    # go vet + go fmt
 | 2 | **Git** | синхронизация через git push/pull, поддержка SSH и HTTPS |
 | 3 | **Torrent / P2P** | управление внешним торрент-клиентом (Transmission/Deluge/qBittorrent) |
 
-➡️ Полное описание, схемы и тесты — [`plans/transport_plan.md`](plans/transport_plan.md).
 
 ---
 
