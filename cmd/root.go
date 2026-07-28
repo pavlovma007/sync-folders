@@ -277,12 +277,107 @@ sync:
 		}
 		printHelp()
 
+	case "status":
+		if len(os.Args) >= 3 {
+			si, err := core.GetStatus(os.Args[2])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			printStatusDetail(si)
+		} else {
+			statuses, err := core.GetAllStatuses()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			printStatusTable(statuses)
+		}
+
 	case "help":
 		printHelp()
 
 	default:
 		printHelp()
 	}
+}
+
+func printStatusTable(statuses []core.StatusInfo) {
+	if len(statuses) == 0 {
+		fmt.Println("No configs configured.")
+		fmt.Println("  Use: sync-folders addconfig <file.yaml>")
+		return
+	}
+
+	// Заголовок
+	fmt.Printf("%-20s %-20s %-12s %-16s %s\n", "Name", "Folder", "Transport", "Direction", "Last Sync")
+	fmt.Printf("%-20s %-20s %-12s %-16s %s\n", "────", "──────", "─────────", "─────────", "──────────")
+
+	for _, si := range statuses {
+		dir := string(si.Direction)
+		switch si.Direction {
+		case core.DirectionPush:
+			dir = "push"
+		case core.DirectionPull:
+			dir = "pull"
+		case core.DirectionBidirectional:
+			dir = "↔ both"
+		}
+
+		lastSync := "─"
+		if !si.LastSync.IsZero() {
+			dur := time.Since(si.LastSync)
+			if dur < time.Minute {
+				lastSync = "just now"
+			} else if dur < time.Hour {
+				lastSync = fmt.Sprintf("%dm ago", int(dur.Minutes()))
+			} else if dur < 24*time.Hour {
+				lastSync = fmt.Sprintf("%dh ago", int(dur.Hours()))
+			} else {
+				lastSync = fmt.Sprintf("%dd ago", int(dur.Hours()/24))
+			}
+		}
+
+		statusIcon := "✅"
+		statusText := lastSync
+		if si.LastError != "" {
+			statusIcon = "❌"
+			errAge := "─"
+			if !si.ErrorTime.IsZero() {
+				errAge = fmt.Sprintf(" %dm ago", int(time.Since(si.ErrorTime).Minutes()))
+			}
+			statusText = fmt.Sprintf("error%s", errAge)
+		}
+
+		fmt.Printf("%-20s %-20s %-12s %-16s %s %s\n", si.Name, truncate(si.FolderPath, 18), si.Transport, dir, statusIcon, statusText)
+	}
+}
+
+func printStatusDetail(si *core.StatusInfo) {
+	fmt.Printf("Config:     %s\n", si.Name)
+	fmt.Printf("Folder:     %s\n", si.FolderPath)
+	fmt.Printf("Transport:  %s\n", si.Transport)
+	fmt.Printf("Direction:  %s\n", si.Direction)
+
+	if !si.LastSync.IsZero() {
+		fmt.Printf("Last sync:  %s (%s)\n", si.LastSync.Format("2006-01-02 15:04:05"), time.Since(si.LastSync).Round(time.Second))
+	} else {
+		fmt.Println("Last sync:  never")
+	}
+
+	if si.LastError != "" {
+		fmt.Printf("Last error: %s\n", si.LastError)
+		if !si.ErrorTime.IsZero() {
+			fmt.Printf("Error at:   %s\n", si.ErrorTime.Format("2006-01-02 15:04:05"))
+		}
+	}
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-1] + "…"
 }
 
 func printHelp() {
@@ -300,6 +395,7 @@ Commands:
   sync <name|--all>             Run sync once
   daemon [--interval <d>]       Run in background
   dry <name>                    Test run (no changes)
+  status [name]                 Show sync status
 
   config template               Show config template
   help                          This help`)

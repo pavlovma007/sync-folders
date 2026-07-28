@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync-folders/db"
 	"sync-folders/filter"
 	"sync-folders/transport"
 	"time"
@@ -12,6 +13,7 @@ import (
 
 // SyncEngine выполняет синхронизацию по одному конфигу.
 type SyncEngine struct {
+	name       string
 	config     SyncConfig
 	localPath  string
 	transp     transport.Transport
@@ -42,6 +44,7 @@ func NewSyncEngine(name string, sc SyncConfig) (*SyncEngine, error) {
 	}
 
 	e := &SyncEngine{
+		name:      name,
 		config:    sc,
 		localPath: localPath,
 		transp:    transp,
@@ -95,7 +98,9 @@ func (e *SyncEngine) push() error {
 		}
 		fullLocalPath := filepath.Join(e.localPath, f.Path)
 		log.Printf("  push: %s", f.Path)
-		if err := e.transp.Push(fullLocalPath, f.Path); err != nil {
+		err := e.transp.Push(fullLocalPath, f.Path)
+		logSyncToJournal(e.name, f.Path, "push", f.Size, err)
+		if err != nil {
 			log.Printf("  push error: %v", err)
 		}
 	}
@@ -121,7 +126,9 @@ func (e *SyncEngine) pull() error {
 		}
 		localPath := filepath.Join(e.localPath, f.Path)
 		log.Printf("  pull: %s", f.Path)
-		if err := e.transp.Pull(f.Path, localPath); err != nil {
+		err := e.transp.Pull(f.Path, localPath)
+		logSyncToJournal(e.name, f.Path, "pull", f.Size, err)
+		if err != nil {
 			log.Printf("  pull error: %v", err)
 		}
 	}
@@ -202,4 +209,133 @@ func Daemon(interval time.Duration) error {
 		}
 	}
 	return nil
+}
+
+// logSyncToJournal открывает журнал и записывает событие синхронизации.
+func logSyncToJournal(configName, filePath, direction string, size int64, err error) {
+	j, openErr := db.Open()
+	if openErr != nil {
+		return
+	}
+	defer j.Close()
+	j.Log(configName, filePath, direction, size, err)
+}
+
+// StatusInfo содержит информацию о статусе синхронизации для одного конфига.
+type StatusInfo struct {
+	Name       string    `json:"name"`
+	Folder     string    `json:"folder"`
+	FolderPath string    `json:"folder_path"`
+	Transport  string    `json:"transport"`
+	Direction  Direction `json:"direction"`
+	LastSync   time.Time `json:"last_sync"`
+	LastError  string    `json:"last_error,omitempty"`
+	ErrorTime  time.Time `json:"error_time,omitempty"`
+}
+
+// GetStatus возвращает статус для одного конфига.
+func GetStatus(name string) (*StatusInfo, error) {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+	sc, ok := cfg.Syncs[name]
+	if !ok {
+		return nil, fmt.Errorf("config %q not found", name)
+	}
+
+	var folderPath string
+	for _, f := range cfg.Folders {
+		if f.Name == sc.Folder {
+			folderPath = f.Path
+			break
+		}
+	}
+
+	si := &StatusInfo{
+		Name:       name,
+		Folder:     sc.Folder,
+		FolderPath: folderPath,
+		Transport:  sc.Transport.Type,
+		Direction:  sc.Sync.Direction,
+	}
+
+	j, openErr := db.Open()
+	if openErr != nil {
+		return si, nil
+	}
+	defer j.Close()
+
+	lastSync, _ := j.LastSync(name)
+	si.LastSync = lastSync
+
+	errStr, errTime, _ := j.LastError(name)
+	si.LastError = errStr
+	si.ErrorTime = errTime
+
+	return si, nil
+}
+
+// GetAllStatuses возвращает статусы для всех конфигов.
+func GetAllStatuses() ([]StatusInfo, error) {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	j, openErr := db.Open()
+	if openErr != nil {
+		var list []StatusInfo
+		for name, sc := range cfg.Syncs {
+			var folderPath string
+			for _, f := range cfg.Folders {
+				if f.Name == sc.Folder {
+					folderPath = f.Path
+					break
+				}
+			}
+			list = append(list, StatusInfo{
+				Name:       name,
+				Folder:     sc.Folder,
+				FolderPath: folderPath,
+				Transport:  sc.Transport.Type,
+				Direction:  sc.Sync.Direction,
+			})
+		}
+		return list, nil
+	}
+	defer j.Close()
+
+	lastSyncMap, _ := j.LastSyncAll()
+
+	var list []StatusInfo
+	for name, sc := range cfg.Syncs {
+		var folderPath string
+		for _, f := range cfg.Folders {
+			if f.Name == sc.Folder {
+				folderPath = f.Path
+				break
+			}
+		}
+
+		si := StatusInfo{
+			Name:       name,
+			Folder:     sc.Folder,
+			FolderPath: folderPath,
+			Transport:  sc.Transport.Type,
+			Direction:  sc.Sync.Direction,
+		}
+
+		if t, ok := lastSyncMap[name]; ok {
+			si.LastSync = t
+		}
+
+		errStr, errTime, _ := j.LastError(name)
+		si.LastError = errStr
+		si.ErrorTime = errTime
+
+		list = append(list, si)
+	}
+
+	return list, nil
 }
