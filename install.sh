@@ -153,9 +153,9 @@ main() {
     fi
 
     if [ "$downloader" = "curl" ]; then
-        $SUDO curl -fsSL -H "Accept: application/octet-stream" -o "$dest_file" "$url"
+        $SUDO curl -fsSL -o "$dest_file" "$url"
     else
-        $SUDO wget -q --header="Accept: application/octet-stream" -O "$dest_file" "$url"
+        $SUDO wget -q -O "$dest_file" "$url"
     fi
 
     # Проверка: файл должен быть ELF-бинарником
