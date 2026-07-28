@@ -16,7 +16,9 @@ set -e
 
 # Настройки (можно переопределить через окружение)
 REPO="${REPO:-pavlovma007/sync-folders}"
-VERSION="${VERSION:-latest}"
+# По умолчанию — последняя версия.
+# Если latest не работает, укажите явно: VERSION=0.1
+VERSION="${VERSION:-0.1}"
 INSTALL_DIR="${INSTALL_DIR:-}"
 
 BINARY_NAME="sync-folders"
