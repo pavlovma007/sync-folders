@@ -12,6 +12,8 @@ import (
 	"runtime"
 	"sync-folders/core"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func RunGUI() {
@@ -24,6 +26,7 @@ func RunGUI() {
 	mux.HandleFunc("/api/folder/clear", handleFolderClear)
 	mux.HandleFunc("/api/config/add", handleConfigAdd)
 	mux.HandleFunc("/api/config/remove", handleConfigRemove)
+	mux.HandleFunc("/api/config/download", handleConfigDownload)
 	mux.HandleFunc("/", handleIndex)
 
 	lastPing := time.Now()
@@ -177,6 +180,36 @@ func handleConfigRemove(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]string{"status": "ok"})
 }
 
+func handleConfigDownload(w http.ResponseWriter, r *http.Request) {
+	name := r.FormValue("name")
+	if name == "" {
+		http.Error(w, "missing name parameter", http.StatusBadRequest)
+		return
+	}
+
+	cfg, err := core.LoadConfig()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	sc, ok := cfg.Syncs[name]
+	if !ok {
+		http.Error(w, fmt.Sprintf("config %q not found", name), http.StatusNotFound)
+		return
+	}
+
+	data, err := yaml.Marshal(sc)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/x-yaml")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.yaml"`, name))
+	w.Write(data)
+}
+
 func handleSync(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -254,7 +287,7 @@ async function load() {
   const c = await (await fetch('/api/configs')).json();
   var html2 = '';
   if(c && typeof c === 'object') {
-    html2 = '<table>' + Object.entries(c).map(([k,v]) => '<tr><td>'+k+'</td><td><small>folder: '+v.Folder+'</small></td><td>'+v.Transport.Type+'</td></tr>').join('') + '</table>';
+    html2 = '<table>' + Object.entries(c).map(([k,v]) => '<tr><td>'+k+'</td><td><small>folder: '+v.Folder+'</small></td><td>'+v.Transport.Type+'</td><td><button class="btn btn-sm btn-primary" onclick="downloadConfig(\''+k+'\')">⬇</button> <button class="btn btn-sm btn-danger" onclick="removeConfig(\''+k+'\')">x</button></td></tr>').join('') + '</table>';
   }
   document.getElementById('configList').innerHTML = html2 || '<i>empty</i>';
 }
@@ -270,6 +303,19 @@ async function addConfig() {
   var f = document.getElementById('configFile').files[0]; if(!f) return;
   var fd = new FormData(); fd.append('yaml', f);
   await fetch('/api/config/add', {method:'POST',body:fd}); load();
+}
+async function downloadConfig(name) {
+  var a = document.createElement('a');
+  a.href = '/api/config/download?name=' + encodeURIComponent(name);
+  a.download = name + '.yaml';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+async function removeConfig(name) {
+  if(!confirm('Remove config "'+name+'"?')) return;
+  await fetch('/api/config/remove?' + new URLSearchParams({name: name}));
+  load();
 }
 async function runSync() { await fetch('/api/sync'); alert('Sync started'); }
 setInterval(function() { fetch('/api/ping').catch(function(){}); }, 5000);
