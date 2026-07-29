@@ -7,13 +7,13 @@ import (
 	"testing"
 )
 
-// setupTest создаёт тестовое окружение: локальную и удалённую (mock) папки.
+// setupTest создаёт тестовое окружение в изолированной HOME.
 func setupTest(t *testing.T) (string, string, *transport.Mock) {
 	t.Helper()
+	t.Setenv("HOME", t.TempDir())
 	localDir := t.TempDir()
 	remoteDir := t.TempDir()
 
-	// создать mock транспорт
 	mock, err := transport.NewMock(map[string]string{"root": remoteDir})
 	if err != nil {
 		t.Fatalf("NewMock: %v", err)
@@ -25,10 +25,8 @@ func TestSyncNewFiles(t *testing.T) {
 	localDir, remoteDir, mock := setupTest(t)
 	os.WriteFile(filepath.Join(localDir, "hello.txt"), []byte("world"), 0644)
 
-	// регистрируем папку
 	AddFolder("test", localDir)
 
-	// создаём конфиг
 	cfg := SyncConfig{
 		Folder: "test",
 		Transport: TransportConfig{
@@ -40,7 +38,6 @@ func TestSyncNewFiles(t *testing.T) {
 		},
 	}
 
-	// запускаем синхронизацию
 	engine := &SyncEngine{
 		config:    cfg,
 		localPath: localDir,
@@ -50,7 +47,6 @@ func TestSyncNewFiles(t *testing.T) {
 		t.Fatalf("push: %v", err)
 	}
 
-	// проверяем что файл появился в remote
 	remoteFiles, _ := mock.List("")
 	if len(remoteFiles) < 1 {
 		t.Error("expected files in remote after push")
@@ -61,7 +57,6 @@ func TestSyncDirectionPull(t *testing.T) {
 	localDir, remoteDir, mock := setupTest(t)
 	AddFolder("test-pull", localDir)
 
-	// создаём файл в удалённой папке (имитируем pull)
 	os.WriteFile(filepath.Join(remoteDir, "remote.txt"), []byte("from remote"), 0644)
 
 	engine := &SyncEngine{
@@ -73,7 +68,6 @@ func TestSyncDirectionPull(t *testing.T) {
 		transp:    mock,
 	}
 
-	// очищаем список конфигов
 	cfg, _ := LoadConfig()
 	cfg.Syncs = map[string]SyncConfig{}
 	SaveConfig(cfg)
@@ -82,7 +76,6 @@ func TestSyncDirectionPull(t *testing.T) {
 		t.Fatalf("pull: %v", err)
 	}
 
-	// проверяем что файл появился локально
 	if _, err := os.Stat(filepath.Join(localDir, "remote.txt")); os.IsNotExist(err) {
 		t.Error("expected remote.txt to be pulled locally")
 	}
@@ -92,7 +85,6 @@ func TestSyncConflictNewer(t *testing.T) {
 	localDir, remoteDir, mock := setupTest(t)
 	AddFolder("test-conflict", localDir)
 
-	// одинаковый файл в обоих папках, локальный новее
 	os.WriteFile(filepath.Join(localDir, "conflict.txt"), []byte("local"), 0644)
 	os.WriteFile(filepath.Join(remoteDir, "conflict.txt"), []byte("remote"), 0644)
 
@@ -105,7 +97,6 @@ func TestSyncConflictNewer(t *testing.T) {
 		},
 	}
 
-	// push должен перезаписать удалённый файл локальным
 	if err := engine.push(); err != nil {
 		t.Fatalf("push: %v", err)
 	}
@@ -117,10 +108,10 @@ func TestSyncConflictNewer(t *testing.T) {
 }
 
 func TestGetStatusNoSync(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	localDir := t.TempDir()
 	AddFolder("status-test", localDir)
 
-	// удаляем старый конфиг если был
 	RemoveConfig("test-status")
 	cfg := SyncConfig{
 		Folder: "status-test",
@@ -158,6 +149,7 @@ func TestGetStatusNoSync(t *testing.T) {
 }
 
 func TestGetStatusAfterSync(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	localDir := t.TempDir()
 	remoteDir := t.TempDir()
 	AddFolder("status-sync", localDir)
@@ -176,7 +168,6 @@ func TestGetStatusAfterSync(t *testing.T) {
 		Syncs:   map[string]SyncConfig{"test-status-sync": cfg},
 	})
 
-	// создаём файл и синхронизируем (чтобы появилась запись в журнале)
 	os.WriteFile(filepath.Join(localDir, "synced.txt"), []byte("data"), 0644)
 
 	mock, _ := transport.NewMock(map[string]string{"root": remoteDir})
@@ -190,7 +181,6 @@ func TestGetStatusAfterSync(t *testing.T) {
 		t.Fatalf("push: %v", err)
 	}
 
-	// проверяем статус после синхронизации
 	si, err := GetStatus("test-status-sync")
 	if err != nil {
 		t.Fatalf("GetStatus after sync: %v", err)
@@ -202,6 +192,7 @@ func TestGetStatusAfterSync(t *testing.T) {
 }
 
 func TestGetStatusNotFound(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	_, err := GetStatus("nonexistent")
 	if err == nil {
 		t.Error("expected error for nonexistent config")
@@ -209,6 +200,7 @@ func TestGetStatusNotFound(t *testing.T) {
 }
 
 func TestGetAllStatusesEmpty(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	SaveConfig(&Config{
 		Folders: []Folder{},
 		Syncs:   map[string]SyncConfig{},
@@ -224,6 +216,7 @@ func TestGetAllStatusesEmpty(t *testing.T) {
 }
 
 func TestGetAllStatusesMultiple(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	localDirA := t.TempDir()
 	localDirB := t.TempDir()
 	remoteDir := t.TempDir()
@@ -235,14 +228,14 @@ func TestGetAllStatusesMultiple(t *testing.T) {
 		},
 		Syncs: map[string]SyncConfig{
 			"config-a": {
-				Folder: "folder-a",
+				Folder:    "folder-a",
 				Transport: TransportConfig{Type: "mock", Config: map[string]string{"root": remoteDir}},
-				Sync:    SyncSettings{Direction: DirectionPush},
+				Sync:      SyncSettings{Direction: DirectionPush},
 			},
 			"config-b": {
-				Folder: "folder-b",
+				Folder:    "folder-b",
 				Transport: TransportConfig{Type: "mock", Config: map[string]string{"root": remoteDir}},
-				Sync:    SyncSettings{Direction: DirectionPull},
+				Sync:      SyncSettings{Direction: DirectionPull},
 			},
 		},
 	})
@@ -255,7 +248,6 @@ func TestGetAllStatusesMultiple(t *testing.T) {
 		t.Fatalf("expected 2 statuses, got %d", len(statuses))
 	}
 
-	// проверяем имена
 	names := make(map[string]bool)
 	for _, s := range statuses {
 		names[s.Name] = true

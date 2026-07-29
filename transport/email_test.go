@@ -438,10 +438,10 @@ func TestEmailList(t *testing.T) {
 	defer smtpSrv.close()
 
 	client, _ := NewEmailClient(map[string]string{
-		"imap":     imap.addr(),
-		"smtp":     smtpSrv.addr(),
-		"user":     "test@example.com",
-		"pass":     "pass",
+		"imap":              imap.addr(),
+		"smtp":              smtpSrv.addr(),
+		"user":              "test@example.com",
+		"pass":              "pass",
 		"self_signed_certs": "true",
 	})
 
@@ -472,10 +472,10 @@ func TestEmailListEmpty(t *testing.T) {
 	defer smtpSrv.close()
 
 	client, _ := NewEmailClient(map[string]string{
-		"imap":     imap.addr(),
-		"smtp":     smtpSrv.addr(),
-		"user":     "t@t.com",
-		"pass":     "p",
+		"imap":              imap.addr(),
+		"smtp":              smtpSrv.addr(),
+		"user":              "t@t.com",
+		"pass":              "p",
 		"self_signed_certs": "true",
 	})
 
@@ -498,10 +498,10 @@ func TestEmailSubjectParse(t *testing.T) {
 	defer smtpSrv.close()
 
 	client, _ := NewEmailClient(map[string]string{
-		"imap":     imap.addr(),
-		"smtp":     smtpSrv.addr(),
-		"user":     "t@t.com",
-		"pass":     "p",
+		"imap":              imap.addr(),
+		"smtp":              smtpSrv.addr(),
+		"user":              "t@t.com",
+		"pass":              "p",
 		"self_signed_certs": "true",
 	})
 
@@ -548,10 +548,10 @@ func TestEmailDelete(t *testing.T) {
 	defer smtpSrv.close()
 
 	client, _ := NewEmailClient(map[string]string{
-		"imap":     imap.addr(),
-		"smtp":     smtpSrv.addr(),
-		"user":     "t@t.com",
-		"pass":     "p",
+		"imap":              imap.addr(),
+		"smtp":              smtpSrv.addr(),
+		"user":              "t@t.com",
+		"pass":              "p",
 		"self_signed_certs": "true",
 	})
 
@@ -581,10 +581,10 @@ func TestEmailMultipleFiles(t *testing.T) {
 	defer smtpSrv.close()
 
 	client, _ := NewEmailClient(map[string]string{
-		"imap":     imap.addr(),
-		"smtp":     smtpSrv.addr(),
-		"user":     "t@t.com",
-		"pass":     "p",
+		"imap":              imap.addr(),
+		"smtp":              smtpSrv.addr(),
+		"user":              "t@t.com",
+		"pass":              "p",
 		"self_signed_certs": "true",
 	})
 
@@ -620,11 +620,11 @@ func TestEmailPushToList(t *testing.T) {
 	defer imap.close()
 
 	client, _ := NewEmailClient(map[string]string{
-		"imap":     imap.addr(),
-		"smtp":     smtpSrv.addr(),
-		"user":     "test@example.com",
-		"pass":     "pass",
-		"compress": "false",
+		"imap":              imap.addr(),
+		"smtp":              smtpSrv.addr(),
+		"user":              "test@example.com",
+		"pass":              "pass",
+		"compress":          "false",
 		"self_signed_certs": "true",
 	})
 
@@ -690,10 +690,10 @@ func TestEmailIMAPConnection(t *testing.T) {
 	defer imap.close()
 
 	client, _ := NewEmailClient(map[string]string{
-		"imap":     imap.addr(),
-		"smtp":     imap.addr(),
-		"user":     "user",
-		"pass":     "pass",
+		"imap":              imap.addr(),
+		"smtp":              imap.addr(),
+		"user":              "user",
+		"pass":              "pass",
 		"self_signed_certs": "true",
 	})
 
