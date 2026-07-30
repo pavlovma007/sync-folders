@@ -1,0 +1,3 @@
+SCENARIO_ID=3
+NAT_A_ACTION="drop"
+NAT_B_ACTION="drop"

@@ -45,6 +45,8 @@ func Factory(typ string, cfg map[string]string) (Transport, error) {
 		return NewMySQLClient(cfg)
 	case "ipfs":
 		return NewIPFSClient(cfg)
+	case "torrent":
+		return newTorrentFromConfig(cfg)
 	default:
 		return nil, fmt.Errorf("unknown transport: %s", typ)
 	}

@@ -10,6 +10,7 @@
 #   make run        — собрать и запустить --help
 #   make clean      — удалить бинарник
 #   make build-all  — кросс-компиляция под 8 платформ (через build.sh)
+#   make test-docker — запустить Docker-интеграционные тесты
 #
 # Тесты:
 #   41 тестов в 3 пакетах: core (8), filter (4), transport (29)
@@ -32,7 +33,7 @@ endif
 
 BINARY := sync-folders
 
-.PHONY: help check test test-v test-short build run clean build-all
+.PHONY: help check test test-v test-short build run clean build-all test-docker
 
 help:
 	@echo "sync-folders — Makefile"
@@ -74,3 +75,13 @@ clean:
 
 build-all:
 	./build.sh
+
+test-docker:
+	@echo "=== Docker Integration Tests ==="
+	@for scenario in $$(ls docker/scenarios/ | sort); do \
+		echo ""; \
+		echo "━━━ Running: $$scenario ━━━"; \
+		bash docker/run.sh "$$scenario" || exit 1; \
+	done
+	@echo ""
+	@echo "All Docker tests passed"

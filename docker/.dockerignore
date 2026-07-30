@@ -1,0 +1,10 @@
+.git/
+.gitignore
+*.go
+node_modules/
+.env
+docs/
+plans/
+*.md
+Dockerfile
+.dockerignore

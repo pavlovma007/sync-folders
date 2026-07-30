@@ -297,6 +297,12 @@ sync:
 	case "help":
 		printHelp()
 
+	case "torrent":
+		handleTorrent(os.Args[2:])
+
+	case "dht":
+		handleDHT(os.Args[2:])
+
 	default:
 		printHelp()
 	}

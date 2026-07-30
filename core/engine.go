@@ -104,6 +104,14 @@ func (e *SyncEngine) push() error {
 			log.Printf("  push error: %v", err)
 		}
 	}
+
+	// Некоторые транспорты (torrent) требуют Flush после всех Push
+	if flusher, ok := e.transp.(interface{ Flush() error }); ok {
+		if err := flusher.Flush(); err != nil {
+			log.Printf("  flush error: %v", err)
+		}
+	}
+
 	return nil
 }
 
