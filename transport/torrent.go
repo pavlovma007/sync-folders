@@ -109,13 +109,17 @@ func (tt *TorrentTransport) Flush() error {
 	}
 	log.Printf("[torrent] snapshot built: %s (%d files)", snapshot.Magnet, len(stagingManifest.Files))
 
-	// 3. Добавить .torrent в qBittorrent на сидирование
+	// 3. Скопировать staging/latest/ в seed-директорию и добавить .torrent в qBittorrent
 	if tt.cfg.TorrentClient != nil {
-		_, err := tt.cfg.TorrentClient.AddTorrentFile(snapshot.TorrentData, "")
+		seedDir, err := tt.staging.PromoteToSeed(tt.cfg.Project)
+		if err != nil {
+			return fmt.Errorf("flush promote to seed: %w", err)
+		}
+		_, err = tt.cfg.TorrentClient.AddTorrentFile(snapshot.TorrentData, seedDir)
 		if err != nil {
 			return fmt.Errorf("flush add torrent: %w", err)
 		}
-		log.Printf("[torrent] added to client for seeding")
+		log.Printf("[torrent] added to client for seeding (savepath=%s)", seedDir)
 	}
 
 	// 4. Опубликовать манифест в DHT

@@ -196,6 +196,38 @@ func (s *Staging) Clear() error {
 	return os.RemoveAll(s.latest)
 }
 
+// PromoteToSeed копирует staging/latest/ в seed-директорию
+// и возвращает путь к ней. qBittorrent найдёт файлы по пути
+// <seedDir>/<project>/<file> (torrent Name = project).
+func (s *Staging) PromoteToSeed(project string) (string, error) {
+	seedDir := filepath.Join(s.rootDir, "seed")
+	destRoot := filepath.Join(seedDir, project)
+
+	if err := os.RemoveAll(destRoot); err != nil {
+		return "", fmt.Errorf("seed clear: %w", err)
+	}
+
+	err := filepath.Walk(s.latest, func(path string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, rerr := filepath.Rel(s.latest, path)
+		if rerr != nil || rel == "." {
+			return nil
+		}
+		dest := filepath.Join(destRoot, rel)
+		if fi.IsDir() {
+			return os.MkdirAll(dest, 0755)
+		}
+		return copyFile(path, dest)
+	})
+	if err != nil {
+		return "", fmt.Errorf("seed copy: %w", err)
+	}
+
+	return seedDir, nil
+}
+
 // scanStaging обходит staging/latest/ и строит FileEntry со sha256.
 func (s *Staging) scanStaging() ([]FileEntry, error) {
 	var files []FileEntry

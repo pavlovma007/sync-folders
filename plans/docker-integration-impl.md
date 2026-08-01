@@ -4,19 +4,53 @@
 
 **Goal:** Создать Docker-based интеграционные тесты для sync-folders с изолированными сетевыми топологиями (NAT, прямая видимость) и реальными внешними сервисами (qBittorrent, IPFS, PHP).
 
-**Architecture:** Один Docker-образ содержит sync-folders, qBittorrent, IPFS, PHP. Два контейнера (peer-a, peer-b) в изолированных bridge-сетях. Оркестратор run.sh управляет сетями, запуском и cleanup. Ключи DHT передаются между пирами через shared volume.
+**Architecture:** Один Docker-образ содержит sync-folders, qBittorrent, IPFS, PHP. Два контейнера (peer-a, peer-b) в bridge-сетях (общая для direct-сценариев, раздельные для NAT). Оркестратор run.sh управляет сетями, запуском и cleanup. Ключи DHT / magnet / CID передаются между пирами через shared volume.
 
 **Tech Stack:** Docker, bash, iptables, jq, qbittorrent-nox, IPFS (kubo), PHP-CLI.
 
+## Статус реализации (2026-08-01)
+
+✅ **Все 10 сценариев проходят** (`make test-docker`).
+
+| Сценарий | Статус |
+|----------|--------|
+| 01-torrent-push-direct | ✅ |
+| 02-torrent-push-nat | ✅ |
+| 03-torrent-push-both-nat | ✅ |
+| 04-torrent-pull-direct | ✅ |
+| 05-torrent-bidirectional | ✅ |
+| 06-torrent-two-stage | ✅ |
+| 07-qb-offline | ✅ |
+| 08-ipfs | ✅ |
+| 09-http-php | ✅ |
+| 10-ipfs-pubsub | ✅ |
+
+**Фактическая структура (отличается от плана):**
+- Сценарии переименованы: `NN-<transport>-<mode>` (01-torrent-push-direct и т.д.)
+- `SHARED_NETWORK` в topology.sh: direct-сценарии (01,04,05,06,08,09,10) — общая сеть; NAT (02,03) — раздельные сети + iptables
+- `docker/lib/test-torrent.sh` — общие функции qBittorrent (qb_login, qb_get, qb_post)
+- `docker/lib/common.sh` — assert, wait_for, log_pass/fail
+- IPFS тесты: 08 — add/get + CID через shared volume; 10 — PubSub (publish/subscribe)
+- HTTP тест: оба пира пушат в общий PHP-сервер (не pull)
+
+**Найденные и исправленные баги утилиты** (см. `plans/draft/docker-test-findings.md`):
+1. Flush удалял staging до сидирования → `PromoteToSeed()`
+2. DHTClient захардкожен на mock → interface
+3. Engine не вызывал Flush() → type-assert
+4. qBittorrent cookie-auth (403)
+5. hex-декодирование DHT-ключей
+
 ## Global Constraints
 
-- Два контейнера на сценарий: peer-a и peer-b, каждый в своей bridge-сети
+- Два контейнера на сценарий: peer-a и peer-b
+- `SHARED_NETWORK="true"` → общая сеть (прямая видимость), `false` → раздельные + NAT
 - Интернет у контейнеров есть (Mainline DHT работает)
-- Ключи DHT передаются через `--volume sync-vol-<scenario>:/shared`
-- NAT симулируется через iptables (блокировка входящих)
+- Ключи DHT / magnet / CID передаются через `--volume sync-vol-<scenario>:/shared`
+- NAT симулируется через iptables (блокировка входящих на net-a/net-b)
 - Сети именуются: `sync-test-<scenario>-a`, `sync-test-<scenario>-b`
 - После теста: контейнеры rm, сети rm, volume rm
 - run.sh принимает `--keep` для отладки
+- qBittorrent требует cookie-auth: логин один раз → cookie в /tmp/qb.cookie
 
 ---
 
@@ -24,107 +58,77 @@
 
 ```
 docker/
-├── Dockerfile                     # Многостадийная сборка
-├── .dockerignore                  # Игнорируем лишнее
-├── run.sh                         # Оркестратор
+├── Dockerfile                     # ubuntu:22.04 builder + qBittorrent + IPFS + PHP
+├── .dockerignore
+├── run.sh                         # Оркестратор (SHARED_NETWORK, NAT, cleanup)
 ├── lib/
-│   ├── common.sh                  # assert, wait_for, log_pass/fail
-│   └── topology.sh                # apply_nat() для сетевых сценариев
+│   ├── common.sh                  # assert, wait_for_port, wait_for_dht_key, log_*
+│   ├── test-torrent.sh            # qb_login, qb_get, qb_post (cookie-auth)
+│   └── topology.sh                # apply_nat(), SHARED_NETWORK
 └── scenarios/
-    ├── 01-push-direct/
-    │   ├── topology.sh            # SCENARIO_ID=1, NAT настройки
-    │   ├── peer-a.yaml            # конфиг sync-folders
-    │   ├── peer-b.yaml            # конфиг sync-folders
-    │   └── test.sh                # сам тест
-    ├── 02-push-nat/
-    │   ├── ...
-    ├── 03-push-both-nat/
-    ├── 04-pull-direct/
-    ├── 05-bidirectional/
-    ├── 06-two-stage/
+    ├── 01-torrent-push-direct/    # SHARED_NETWORK=true
+    │   ├── topology.sh
+    │   └── test.sh                # peer-a push, peer-b download (shared volume)
+    ├── 02-torrent-push-nat/       # SHARED_NETWORK=false, NAT_B drop
+    ├── 03-torrent-push-both-nat/  # SHARED_NETWORK=false, NAT_A+B drop
+    ├── 04-torrent-pull-direct/    # peer-b инициирует
+    ├── 05-torrent-bidirectional/
+    ├── 06-torrent-two-stage/
     ├── 07-qb-offline/
-    ├── 08-ipfs/
-    └── 09-http/
+    ├── 08-ipfs/                   # add/get + CID через shared volume
+    ├── 09-http-php/               # оба пира в общий PHP-сервер
+    ├── 10-ipfs-pubsub/            # IPFS PubSub (publish/subscribe)
+    └── (каждый сценарий: topology.sh + test.sh)
 ```
 
 ---
 
-### Task 1: Dockerfile
+### Task 1: Dockerfile ✅
 
 **Files:**
 - Create: `docker/Dockerfile`
 - Create: `docker/.dockerignore`
 
-- [ ] **Step 1: Write .dockerignore**
-
-```
-.git/
-*.go
-node_modules/
-.env
-docs/
-plans/
-```
-
-- [ ] **Step 2: Write Dockerfile**
+**Итоговый Dockerfile** (отличается от черновика — см. `docker/Dockerfile`):
 
 ```dockerfile
-# Stage 1: сборка sync-folders
-FROM golang:1.26 AS builder
+# Stage 1: сборка sync-folders на ubuntu:22.04 (libc совместима с финалом)
+FROM ubuntu:22.04 AS builder
+ENV DEBIAN_FRONTEND=noninteractive TZ=UTC
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates gcc libsqlite3-dev && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL https://go.dev/dl/go1.26.5.linux-amd64.tar.gz | tar xz -C /usr/local
+ENV PATH=/usr/local/go/bin:$PATH
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -o sync-folders .
+RUN go build -o sync-folders .   # CGO нужен для go-sqlite3
 
 # Stage 2: финальный образ
 FROM ubuntu:22.04
-
-# Go toolchain (для работы go build если нужно пересобрать)
-ENV GOROOT=/usr/local/go
-ENV PATH=$GOROOT/bin:$PATH
-
-# Установка зависимостей
+ENV DEBIAN_FRONTEND=noninteractive TZ=UTC
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    qbittorrent-nox \
-    iptables \
-    jq \
-    curl \
-    ca-certificates \
-    php-cli \
+    qbittorrent-nox iptables jq curl ca-certificates php-cli iproute2 \
     && rm -rf /var/lib/apt/lists/*
-
-# sync-folders
 COPY --from=builder /build/sync-folders /usr/local/bin/sync-folders
-
-# PHP-хранилище для http-тестов
 COPY transport/php_storage.php /opt/php-storage/php_storage.php
-
-# IPFS (kubo binary)
-RUN curl -fsSL https://dist.ipfs.tech/kubo/v0.29.0/kubo_v0.29.0_linux_amd64.tar.gz \
+RUN curl -fsSL https://dist.ipfs.tech/kubo/v0.42.0/kubo_v0.42.0_linux-amd64.tar.gz \
     | tar xz -C /usr/local --strip-components=1
-
-# Точка входа — скрипты монтируются через volume
 WORKDIR /data
-ENTRYPOINT ["/bin/bash"]
+ENTRYPOINT []   # НЕ /bin/bash — иначе CMD трактуется как скрипт
 ```
 
-- [ ] **Step 3: Build and verify**
-
-```bash
-cd /mnt/nas/MY/sync-folders
-docker build -t sync-folders-test -f docker/Dockerfile .
-docker run --rm sync-folders-test sync-folders --help | head -5
-# Expected: sync-folders help text
-docker run --rm sync-folders-test qbittorrent-nox --version
-# Expected: qBittorrent version
-docker run --rm sync-folders-test ipfs version
-# Expected: ipfs version
-```
+**Ключевые уроки при сборке:**
+- `CGO_ENABLED=0` ломает go-sqlite3 → билд с CGO
+- builder на `golang:1.26` (Debian 13, glibc 2.41) несовместим с ubuntu:22.04 (glibc 2.35) → builder на ubuntu:22.04
+- `ENTRYPOINT ["/bin/bash"]` → любой CMD падает «cannot execute binary file» → `ENTRYPOINT []`
+- `DEBIAN_FRONTEND=noninteractive` (tzdata вешает сборку)
+- IPFS URL: `linux-amd64` (дефис), версия v0.42.0
 
 ---
 
-### Task 2: lib/common.sh и lib/topology.sh
+### Task 2: lib/common.sh, lib/test-torrent.sh, lib/topology.sh ✅
 
 **Files:**
 - Create: `docker/lib/common.sh`
@@ -251,7 +255,7 @@ echo "OK"
 
 ---
 
-### Task 3: run.sh — оркестратор
+### Task 3: run.sh — оркестратор ✅
 
 **Files:**
 - Create: `docker/run.sh`
@@ -368,7 +372,7 @@ echo "OK"
 
 ---
 
-### Task 4: Scenario 01-push-direct
+### Task 4: Scenario 01-torrent-push-direct ✅
 
 **Files:**
 - Create: `docker/scenarios/01-push-direct/topology.sh`
@@ -499,7 +503,7 @@ docker/run.sh 01-push-direct
 
 ---
 
-### Task 5: Scenario 02-push-nat
+### Task 5: Scenario 02-torrent-push-nat ✅
 
 **Files:**
 - Create: `docker/scenarios/02-push-nat/topology.sh`
@@ -537,7 +541,7 @@ docker/run.sh 02-push-nat
 
 ---
 
-### Task 6: Scenario 06-two-stage
+### Task 6: Scenario 06-torrent-two-stage ✅
 
 **Files:**
 - Create: `docker/scenarios/06-two-stage/topology.sh`
@@ -637,7 +641,7 @@ docker/run.sh 06-two-stage
 
 ---
 
-### Task 7: Remaining scenarios
+### Task 7: Remaining scenarios ✅
 
 **Files:**
 - Create: `docker/scenarios/03-push-both-nat/` (аналогично 02, но NAT_A_ACTION="drop")
@@ -688,7 +692,7 @@ transport:
 
 ---
 
-### Task 8: Makefile target
+### Task 8: Makefile target ✅
 
 **Files:**
 - Modify: `Makefile`

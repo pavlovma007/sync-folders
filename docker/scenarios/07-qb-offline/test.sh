@@ -1,4 +1,18 @@
 #!/bin/bash
+#
+# Тест: поведение sync-folders когда qBittorrent не запущен.
+#
+# Peer A пытается выполнить push без запущенного qBittorrent.
+# sync-folders НЕ ДОЛЖЕН падать с panic — ошибка должна
+# корректно обрабатываться и логироваться.
+#
+# Проверяет:
+#   - Устойчивость к отсутствию qBittorrent
+#   - Корректная обработка ошибок
+#
+# Топология: раздельные сети
+# Транспорт: qBittorrent (НЕ запущен)
+
 source /opt/sync-test/lib/common.sh
 
 case $ROLE in

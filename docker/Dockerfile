@@ -42,7 +42,7 @@ COPY --from=builder /build/sync-folders /usr/local/bin/sync-folders
 COPY transport/php_storage.php /opt/php-storage/php_storage.php
 
 RUN curl -fsSL https://dist.ipfs.tech/kubo/v0.42.0/kubo_v0.42.0_linux-amd64.tar.gz \
-    | tar xz -C /usr/local --strip-components=1
+    | tar xz -C /tmp && mv /tmp/kubo/ipfs /usr/local/bin/ipfs && rm -rf /tmp/kubo
 
 WORKDIR /data
 ENTRYPOINT []
