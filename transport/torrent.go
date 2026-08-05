@@ -388,22 +388,27 @@ func newTorrentFromConfig(cfg map[string]string) (*TorrentTransport, error) {
 		return nil, fmt.Errorf("torrent: unknown client type: %s", clientType)
 	}
 
-	// Parse DHT keys (hex-encoded)
+	// Parse DHT keys (hex-encoded).
+	// Hex-строка: 64 символа → 32 байта (pub), 128 символов → 64 байта (priv).
 	if pk := cfg["dht_public_key"]; pk != "" {
 		decoded, err := hex.DecodeString(pk)
-		if err == nil {
-			tc.DHTKey = decoded
-		} else {
-			tc.DHTKey = []byte(pk)
+		if err != nil {
+			return nil, fmt.Errorf("dht_public_key: invalid hex: %w", err)
 		}
+		if len(decoded) != 32 {
+			return nil, fmt.Errorf("dht_public_key: expected 32 bytes, got %d", len(decoded))
+		}
+		tc.DHTKey = decoded
 	}
 	if priv := cfg["dht_private_key"]; priv != "" {
 		decoded, err := hex.DecodeString(priv)
-		if err == nil {
-			tc.DHTPrivKey = decoded
-		} else {
-			tc.DHTPrivKey = []byte(priv)
+		if err != nil {
+			return nil, fmt.Errorf("dht_private_key: invalid hex: %w", err)
 		}
+		if len(decoded) != 64 {
+			return nil, fmt.Errorf("dht_private_key: expected 64 bytes, got %d", len(decoded))
+		}
+		tc.DHTPrivKey = decoded
 	}
 
 	// Create DHT client if keys are provided

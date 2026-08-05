@@ -15,6 +15,7 @@
 - [MySQL (PHP) — хостинг с БД](#mysql-php--хостинг-с-бд)
 - [IPFS — децентрализованное хранилище](#ipfs--децентрализованное-хранилище)
 - [Tor — через анонимную сеть](#tor--через-анонимную-сеть)
+- [Torrent / P2P — децентрализованный](#torrent--p2p--децентрализованный)
 - [JS-фильтры — что и когда синхронизировать](#js-фильтры--что-и-когда-синхронизировать)
 - [Команды](#команды)
 - [Что делать если...](#что-делать-если)
@@ -502,6 +503,47 @@ sync-folders sync tor-backup
 
 ---
 
+### Torrent / P2P — децентрализованный
+
+**Когда нужно:** Синхронизация между компьютерами без общего сервера, через торренты и DHT.
+**Как работает:** sync-folders публикует magnet-ссылку папки в DHT (BEP-44, `anacrolix/dht`),
+а файлы передаются через торрент-клиент (qBittorrent/Deluge/Transmission).
+
+**Шаг 1. Сгенерировать ключи**
+```bash
+sync-folders torrent keygen my-project
+# → public_key:  dC8xX2...
+# → private_key: pK3mR9...
+```
+
+**Шаг 2. Конфиг (`torrent-sync.yaml`)**
+```yaml
+folder: "shared"
+transport:
+  type: torrent
+  config:
+    client: "qbittorrent"              # qbittorrent | deluge | transmission
+    api_url: "http://127.0.0.1:8080"
+    api_user: "admin"
+    api_password: "${QB_PASS}"
+    download_dir: "/tmp/sync-torrents"
+    dht_public_key: "dC8xX2..."        # hex, 32 байта
+    dht_private_key: "${DHT_KEY}"      # hex, 64 байта
+    project: "my-project"              # salt = "sync-folders:" + project
+    keep_seeds: "3"                    # хранить последние N раздач
+sync:
+  period: "5m"
+  direction: "push"                    # push | pull | bidirectional
+```
+
+**Проверка DHT:**
+```bash
+sync-folders dht put <ключ> <priv> <salt> <seq> '<json>'
+sync-folders dht get <ключ> <salt>
+```
+
+---
+
 ## JS-фильтры — что и когда синхронизировать
 
 Фильтры позволяют исключить ненужные файлы до отправки или получения.
@@ -673,6 +715,12 @@ sync-folders sync --all                     # запустить все конф
 sync-folders daemon                         # запустить в фоне
 sync-folders dry <имя>                      # пробный прогон (без изменений)
 
+# Torrent / DHT
+sync-folders torrent keygen <проект>        # сгенерировать Ed25519 ключи
+sync-folders dht put <ключ> <priv> <salt> <seq> '<json>'   # публикация в DHT
+sync-folders dht get <ключ> <salt>          # чтение из DHT
+sync-folders dht watch <ключ> <salt>        # слежение за обновлениями DHT
+
 # Помощь
 sync-folders --help
 ```
@@ -768,11 +816,21 @@ transport/
   interface.go       — интерфейс Transport и фабрика Factory()
   ssh.go / ftp.go / webdav.go / s3.go / http.go
   email.go / mysql.go / ipfs.go / tor.go
+  torrent*.go        — TorrentTransport (staging, diff, .torrent)
+  torrent_qb.go / torrent_deluge.go / torrent_transmission.go
+
+dht/
+  manifest.go        — манифест + Ed25519 подпись
+  client.go          — BEP-44 клиент (anacrolix/dht)
 
 filter/
   engine.go          — JS-движок (goja) для фильтрации файлов
 
 db/journal.go        — SQLite-журнал операций синхронизации
+
+docker/
+  run.sh             — оркестратор Docker-интеграционных тестов
+  scenarios/         — 17 сценариев (торренты, IPFS, SSH, FTP, WebDAV, S3, MySQL, email, Tor)
 ```
 
 **Как работает SyncEngine:**
@@ -814,6 +872,13 @@ make check    # go vet + go fmt
 #
 # Пакет filter (4 теста):
 #   TestFilterJS, TestFilterEmptyJS, TestFilterByName, TestFilterSyntaxError
+
+# Docker-интеграционные тесты (17 сценариев, 2 узла):
+make test-docker
+# или вручную: docker/run.sh <сценарий>
+docker/run.sh 01-torrent-push-direct
+docker/run.sh 11-ssh
+# подробнее: docs/blog-docker-integration-tests.md
 ```
 
 ---
@@ -833,6 +898,7 @@ make check    # go vet + go fmt
 | **MySQL (PHP+БД)** | Хранение файлов в LONGBLOB на любом хостинге с MySQL. Группировка файлов, Basic Auth. |
 | **IPFS** | Глобальная файловая система через HTTP API IPFS-демона. MFS/PubSub/Гибрид режимы. |
 | **Tor / Dark Net** | Прокси-слой поверх любого транспорта через SOCKS5 (Tor). Собственный SOCKS5 клиент. |
+| **Torrent / P2P** | Торрент-транспорт: DHT-публикация манифеста (BEP-44, anacrolix/dht), qBittorrent/Deluge/Transmission для сидирования. |
 
 ### 📋 Планируется к реализации
 
@@ -840,7 +906,6 @@ make check    # go vet + go fmt
 |-----------|-----------|----------|
 | 1 | **Local / USB / флешки** | синхронизация через внешний носитель с авто-запуском при подключении (inotify/udev) |
 | 2 | **Git** | синхронизация через git push/pull, поддержка SSH и HTTPS |
-| 3 | **Torrent / P2P** | управление внешним торрент-клиентом (Transmission/Deluge/qBittorrent) |
 
 
 ---

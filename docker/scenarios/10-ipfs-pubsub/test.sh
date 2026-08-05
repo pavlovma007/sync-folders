@@ -38,6 +38,7 @@ case $ROLE in
         echo "hello from A via IPFS PubSub $(date)" > /data/source/test.txt
         CID=$(ipfs add -Q /data/source/test.txt)
         log_pass "A: CID=$CID"
+        ipfs pin add "$CID" >/dev/null 2>&1 || true
         echo "$CID" > /shared/cid.txt
 
         # Ждём пока peer-b подпишется
@@ -98,8 +99,13 @@ case $ROLE in
 
         log_info "B: downloading CID=$CID"
         mkdir -p /data/dest
-        ipfs get "$CID" -o /data/dest/out.txt 2>&1 | tail -1
-        sleep 2
+        # Ретраи скачивания (IPFS bitswap может быть медленным)
+        # ipfs cat — потоковое чтение контента по CID
+        for attempt in $(seq 1 5); do
+            timeout 20 ipfs cat "$CID" > /data/dest/out.txt 2>/dev/null
+            if [ -s /data/dest/out.txt ]; then break; fi
+            sleep 5
+        done
         if [ -f /data/dest/out.txt ]; then
             log_pass "B: file OK: $(head -c 40 /data/dest/out.txt)"
         else

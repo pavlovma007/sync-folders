@@ -23,11 +23,13 @@ PREFIX="sync-test-${SCENARIO}"
 NET_A="${PREFIX}-a"
 NET_B="${PREFIX}-b"
 VOL="${PREFIX}-vol"
+# Адрес сервис-контейнера (задаётся в run_peer как env). Пуст, если сервис не запускался.
+MAIL_HOST=""
 
 log_info "Starting scenario: $SCENARIO"
 
 cleanup() {
-    docker rm -f "${PREFIX}-a" "${PREFIX}-b" 2>/dev/null || true
+    docker rm -f "${PREFIX}-a" "${PREFIX}-b" "${PREFIX}-svc" 2>/dev/null || true
     docker network rm "$NET_A" "$NET_B" 2>/dev/null || true
     docker volume rm "$VOL" 2>/dev/null || true
 }
@@ -45,6 +47,7 @@ run_peer() {
     docker run -d --name "${PREFIX}-${role}" \
         --net "$net" -e "ROLE=$role" -e "SCENARIO=$SCENARIO" \
         -e "PEER_HOST=${PREFIX}-${other}" \
+        -e "MAIL_HOST=$MAIL_HOST" \
         -v "$SCENARIO_DIR:/scenario:ro" \
         -v "$SCRIPT_DIR/lib:/opt/sync-test/lib:ro" \
         -v "$VOL:/shared" \
@@ -54,11 +57,31 @@ run_peer() {
 if [ "${SHARED_NETWORK:-false}" = "true" ]; then
     log_info "Shared network (direct visibility)"
     docker network create --subnet "10.${SCENARIO_ID}.1.0/24" "$NET_A" >/dev/null
-    run_peer "a" "$NET_A"; sleep 5; run_peer "b" "$NET_A"
 else
     log_info "Separate networks (${NET_A} + ${NET_B})"
     docker network create --subnet "10.${SCENARIO_ID}.1.0/24" "$NET_A" >/dev/null
     docker network create --subnet "10.${SCENARIO_ID}.2.0/24" "$NET_B" >/dev/null
+fi
+
+# Сервис-контейнер (третий контейнер, не peer).
+# Запускается в основной сети NET_A, если сценарий объявил SERVICE_CONTAINER
+# в topology.sh (например 21-email: Stalwart Mail Server вместо postfix+dovecot
+# внутри peer-a). Адрес сервиса передаётся пирам через env MAIL_HOST.
+# SERVICE_CONTAINER — строка аргументов docker run после --net (образ + флаги),
+# поэтому намеренно не в кавычках.
+if [ -n "${SERVICE_CONTAINER:-}" ]; then
+    log_info "Starting service container: $SERVICE_CONTAINER"
+    docker run -d --name "${PREFIX}-svc" \
+        --net "$NET_A" \
+        $SERVICE_CONTAINER
+    MAIL_HOST="${PREFIX}-svc"
+    # Даём сервису время подняться, пока стартуют пиры
+    sleep 3
+fi
+
+if [ "${SHARED_NETWORK:-false}" = "true" ]; then
+    run_peer "a" "$NET_A"; sleep 5; run_peer "b" "$NET_A"
+else
     run_peer "a" "$NET_A"; sleep 5; run_peer "b" "$NET_B"
     apply_nat "$NET_A" "$NET_B"
 fi

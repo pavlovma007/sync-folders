@@ -1,7 +1,9 @@
 package transport
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -200,38 +202,85 @@ func (s *SSHClient) Push(localPath, remotePath string) error {
 	}
 
 	// SCP protocol: scp -t remote_path
-	// Отправляем: C<perms> <size> <filename>\n, затем данные, затем \x00
+	// Протокол:
+	//   локальный → C<perms> <size> <name>\n
+	//   удалённый  → \x00 (ack)
+	//   локальный → данные
+	//   локальный → \x00
+	//   удалённый  → \x00 (done)
 	perms := "0644"
 	scpCmd := fmt.Sprintf("scp -t '%s'", fullRemote)
-	session.Stdin = file
 
-	// Запускаем SCP в режиме приёма (-t)
+	// НЕ задаём session.Stdin = file — используем StdinPipe для протокола SCP
 	w, err := session.StdinPipe()
 	if err != nil {
 		return err
 	}
 	defer w.Close()
 
-	session.Stdout = nil
+	r, err := session.StdoutPipe()
+	if err != nil {
+		return err
+	}
+
 	session.Stderr = os.Stderr
 
 	if err := session.Start(scpCmd); err != nil {
 		return fmt.Errorf("scp start: %w", err)
 	}
 
-	// Ждём \x00 (SCP готов)
+	br := bufio.NewReader(r)
+
 	// Отправляем заголовок C<perms> <size> <name>
 	header := fmt.Sprintf("C%s %d %s\n", perms, stat.Size(), stat.Name())
-	w.Write([]byte(header))
+	if _, err := w.Write([]byte(header)); err != nil {
+		return fmt.Errorf("scp header: %w", err)
+	}
+	// Ждём ack (\x00)
+	if err := scpReadAck(br); err != nil {
+		return fmt.Errorf("scp ack header: %w", err)
+	}
 
 	// Отправляем содержимое файла
-	data, _ := os.ReadFile(localPath)
-	w.Write(data)
-
-	// Завершающий \x00
-	w.Write([]byte{0})
+	data, _ := io.ReadAll(file)
+	if _, err := w.Write(data); err != nil {
+		return fmt.Errorf("scp data: %w", err)
+	}
+	// Завершающий \x00 (EOF marker)
+	if _, err := w.Write([]byte{0}); err != nil {
+		return fmt.Errorf("scp terminator: %w", err)
+	}
+	// Ждём ack после данных
+	if err := scpReadAck(br); err != nil {
+		return fmt.Errorf("scp data ack: %w", err)
+	}
+	// Конец передачи: E\n
+	if _, err := w.Write([]byte("E\n")); err != nil {
+		return fmt.Errorf("scp end: %w", err)
+	}
+	// Ждём финальный ack
+	if err := scpReadAck(br); err != nil {
+		return fmt.Errorf("scp end ack: %w", err)
+	}
 
 	return session.Wait()
+}
+
+// scpReadAck читает SCP-подтверждение (байт \x00 или \x01 с сообщением об ошибке).
+func scpReadAck(r *bufio.Reader) error {
+	b, err := r.ReadByte()
+	if err != nil {
+		return err
+	}
+	switch b {
+	case 0:
+		return nil
+	case 1:
+		msg, _ := r.ReadString('\n')
+		return fmt.Errorf("scp remote error: %s", msg)
+	default:
+		return fmt.Errorf("scp unexpected response: %d", b)
+	}
 }
 
 // Pull копирует файл с удалённой машины через SCP.

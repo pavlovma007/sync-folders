@@ -78,7 +78,7 @@ func handleDHT(args []string) {
 		if err != nil {
 			log.Fatalf("DHT put: %v", err)
 		}
-		fmt.Printf("Published to DHT (seq=%d, salt=%s)\n", seq, salt)
+		fmt.Printf("Published to DHT (seq=%d, salt=%s, nodes=%d)\n", seq, salt, client.Nodes())
 
 	case "get":
 		if len(args) < 3 {

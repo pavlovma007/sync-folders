@@ -2,3 +2,5 @@ build/
 plans/transport_plan.md
 plans/completed/sync_app_plan.md
 sync-folders
+docker/bin/
+*.tar.gz

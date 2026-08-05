@@ -1,10 +1,13 @@
 package dht
 
 import (
+	"net"
 	"testing"
 	"time"
 
+	"github.com/anacrolix/dht/v2"
 	"github.com/anacrolix/dht/v2/bep44"
+	"github.com/anacrolix/dht/v2/krpc"
 )
 
 func TestTestPairPutGet(t *testing.T) {
@@ -138,12 +141,127 @@ func TestPutOverwrite(t *testing.T) {
 
 func TestNewClient(t *testing.T) {
 	// Just test that a client can be created (without connecting to Mainline)
-	// We pass a nil Store to use default, but with a custom config
 	// This is a lightweight creation test
 	c := &Client{
-		store:   bep44.NewMemory(),
+		store:   bep44.NewWrapper(bep44.NewMemory(), time.Hour),
 		timeout: time.Second,
 	}
 	_ = c
 	t.Log("Client creation OK (server omitted for unit test)")
+}
+
+// newClientForTest создаёт реальный DHT-сервер (без Mainline bootstrap)
+// и обёртку Client над ним. Сервер слушает на loopback, чтобы UDP-пакеты
+// реально доходили между тестовыми узлами.
+func newClientForTest(t *testing.T) (*Client, *dht.Server) {
+	t.Helper()
+	conn, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("ListenPacket: %v", err)
+	}
+	exp := time.Hour
+	mem := bep44.NewMemory()
+	s, err := dht.NewServer(&dht.ServerConfig{
+		Conn:        conn,
+		Store:       mem,
+		Exp:         exp,
+		WaitToReply: true,
+		// Как в NewDefaultServerConfig: иначе случайный node ID не пройдёт
+		// BEP-42 "secure" проверку и узлы не попадут в таблицу маршрутизации.
+		NoSecurity: true,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	// То же устройство хранилища, что и в NewClient: Client пишет/читает
+	// через Wrapper, чтобы положенные items не считались просроченными.
+	return &Client{server: s, store: bep44.NewWrapper(mem, exp), timeout: 5 * time.Second}, s
+}
+
+// TestClientGetNetwork проверяет, что Client.Get() через traversal
+// находит item у удалённого узла (in-process, без Mainline DHT).
+func TestClientGetNetwork(t *testing.T) {
+	cA, sA := newClientForTest(t)
+	cB, sB := newClientForTest(t)
+
+	// Добавляем B в таблицу маршрутизации A — единственный стартовый узел
+	// для traversal (не хотим зависеть от DNS/bootstrap в тесте).
+	if err := sA.AddNode(krpc.NodeInfo{ID: sB.ID(), Addr: dht.NewAddr(sB.Addr()).KRPC()}); err != nil {
+		t.Fatalf("AddNode: %v", err)
+	}
+
+	pub, priv, err := GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+
+	value := []byte(`{"seq":7,"magnet":"magnet:?xt=urn:btih:net1","ts":1700000000,"files_hash":"abc"}`)
+	if err := cB.Put(pub, priv, "test", 7, value); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	// Get из A: локально item отсутствует -> traversal опрашивает B.
+	got, seq, err := cA.Get(pub, "test")
+	if err != nil {
+		t.Fatalf("Get over network: %v", err)
+	}
+	if string(got) != string(value) {
+		t.Errorf("value mismatch: got %q, want %q", string(got), string(value))
+	}
+	if seq != 7 {
+		t.Errorf("seq: got %d, want 7", seq)
+	}
+}
+
+// TestClientGetTraversalNotFound проверяет, что traversal-ветка Client.Get()
+// не паникует и возвращает ошибку, когда item нигде нет.
+func TestClientGetTraversalNotFound(t *testing.T) {
+	c, _ := newClientForTest(t)
+
+	pub, _, err := GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+
+	// Пустая таблица и нет StartingNodes: traversal сразу останавливается.
+	_, _, err = c.Get(pub, "test")
+	if err == nil {
+		t.Fatal("expected error for missing item")
+	}
+	t.Logf("Get with traversal returned expected error: %v", err)
+}
+
+// TestClientPutNetwork проверяет, что Client.Put() через traversal
+// публикует item у удалённого узла: Get → write token → Put (BEP-44).
+func TestClientPutNetwork(t *testing.T) {
+	cA, sA := newClientForTest(t)
+	cB, sB := newClientForTest(t)
+
+	// Добавляем B в таблицу маршрутизации A — единственный стартовый узел
+	// для traversal (не хотим зависеть от DNS/bootstrap в тесте).
+	if err := sA.AddNode(krpc.NodeInfo{ID: sB.ID(), Addr: dht.NewAddr(sB.Addr()).KRPC()}); err != nil {
+		t.Fatalf("AddNode: %v", err)
+	}
+
+	pub, priv, err := GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+
+	value := []byte(`{"seq":9,"magnet":"magnet:?xt=urn:btih:put1"}`)
+
+	// Put из A → по сети должен дойти до B (через traversal).
+	if err := cA.Put(pub, priv, "test", 9, value); err != nil {
+		t.Fatalf("Put network: %v", err)
+	}
+
+	// Get из B локально (B получил item через сетевой Put) → должен найти.
+	got, seq, err := cB.Get(pub, "test")
+	if err != nil {
+		t.Fatalf("B Get after Put: %v", err)
+	}
+	if seq != 9 || string(got) != string(value) {
+		t.Errorf("got seq=%d val=%q, want seq=9 val=%q", seq, string(got), string(value))
+	}
 }

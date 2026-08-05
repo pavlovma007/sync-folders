@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -289,10 +290,25 @@ func extractBodyFromIMAPResponse(resp []string) ([]byte, error) {
 				}
 			}
 		} else {
-			// Это literal data
-			buf.WriteString(line)
-			// Если literal точно размер, то это все данные
-			// На практике literal может быть разбит на несколько строк
+			// Это literal data. IMAP разбивает literal на "строки" по \r\n.
+			// Восстанавливаем разделитель между кусками, иначе MIME-структура
+			// ломается (заголовки письма сливаются в одну строку).
+			// Обрезаем строго до literalSize байт.
+			remaining := literalSize - buf.Len()
+			if remaining <= 0 {
+				inLiteral = false
+				continue
+			}
+			// Добавляем \r\n перед куском, если это не первый кусок literal.
+			if buf.Len() > 0 && !strings.HasPrefix(line, "\r\n") && remaining > 2 {
+				buf.WriteString("\r\n")
+				remaining--
+			}
+			chunk := line
+			if len(chunk) > remaining {
+				chunk = chunk[:remaining]
+			}
+			buf.WriteString(chunk)
 			if buf.Len() >= literalSize {
 				inLiteral = false
 			}
@@ -338,10 +354,10 @@ func (e *EmailClient) sendMail(subject string, data []byte, filename string) err
 		return fmt.Errorf("email create part: %w", err)
 	}
 
-	// Записываем данные (уже gzip) в base64
-	// Используем простую кодировку — просто пишем данные
-	// SMTP поддерживает 8bit, так что base64 необязателен
-	if _, err := part.Write(data); err != nil {
+	// Записываем данные (уже gzip) в base64 — заголовок выше обещает base64.
+	// Без явного кодирования postfix перекодирует 8bit данные при доставке,
+	// и вложение придёт в другом виде.
+	if _, err := part.Write([]byte(base64.StdEncoding.EncodeToString(data))); err != nil {
 		return fmt.Errorf("email write data: %w", err)
 	}
 	writer.Close()
@@ -357,11 +373,56 @@ func (e *EmailClient) sendMail(subject string, data []byte, filename string) err
 	msg.WriteString("\r\n")
 	msg.Write(body.Bytes())
 
-	auth := smtp.PlainAuth("", e.user, e.pass, hostWithoutPort(e.smtpHost))
+	// SMTP с кастомным TLS (поддержка self_signed_certs).
+	// smtp.SendMail не позволяет задать tls.Config, поэтому делаем вручную.
+	serverName := hostWithoutPort(e.smtpHost)
 
-	err = smtp.SendMail(e.smtpHost, auth, e.user, []string{e.user}, msg.Bytes())
+	conn, err := net.Dial("tcp", e.smtpHost)
 	if err != nil {
-		return fmt.Errorf("email smtp send: %w", err)
+		return fmt.Errorf("email smtp dial: %w", err)
+	}
+	defer conn.Close()
+
+	client, err := smtp.NewClient(conn, serverName)
+	if err != nil {
+		return fmt.Errorf("email smtp client: %w", err)
+	}
+
+	// STARTTLS с учётом self_signed_certs (если сервер его поддерживает)
+	if ok, _ := client.Extension("STARTTLS"); ok {
+		tlsCfg := &tls.Config{
+			ServerName:         serverName,
+			InsecureSkipVerify: e.selfSignedCerts,
+		}
+		if err := client.StartTLS(tlsCfg); err != nil {
+			return fmt.Errorf("email smtp starttls: %w", err)
+		}
+	}
+
+	auth := smtp.PlainAuth("", e.user, e.pass, serverName)
+	if err := client.Auth(auth); err != nil {
+		return fmt.Errorf("email smtp auth: %w", err)
+	}
+
+	if err := client.Mail(e.user); err != nil {
+		return fmt.Errorf("email smtp mail: %w", err)
+	}
+	if err := client.Rcpt(e.user); err != nil {
+		return fmt.Errorf("email smtp rcpt: %w", err)
+	}
+
+	w, err := client.Data()
+	if err != nil {
+		return fmt.Errorf("email smtp data: %w", err)
+	}
+	if _, err := w.Write(msg.Bytes()); err != nil {
+		return fmt.Errorf("email smtp write: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("email smtp close: %w", err)
+	}
+	if err := client.Quit(); err != nil {
+		return fmt.Errorf("email smtp quit: %w", err)
 	}
 	return nil
 }
@@ -685,13 +746,17 @@ func extractAttachments(raw []byte) ([][]byte, error) {
 			continue
 		}
 		partsLines := strings.Split(part, "\r\n")
-		// Ищем Content-Disposition: attachment
+		// Ищем Content-Disposition: attachment и Content-Transfer-Encoding
 		isAttachment := false
+		isBase64 := false
 		headerEnd := -1
 		for i, line := range partsLines {
 			lower := strings.ToLower(line)
 			if strings.Contains(lower, "content-disposition:") && strings.Contains(lower, "attachment") {
 				isAttachment = true
+			}
+			if strings.Contains(lower, "content-transfer-encoding:") && strings.Contains(lower, "base64") {
+				isBase64 = true
 			}
 			if line == "" && i > 0 {
 				headerEnd = i
@@ -702,6 +767,14 @@ func extractAttachments(raw []byte) ([][]byte, error) {
 			data := []byte(strings.Join(partsLines[headerEnd+1:], "\r\n"))
 			// Убираем trailing -- (конец multipart)
 			data = bytes.TrimRight(data, "\r\n-")
+			// Если вложение в base64 — декодируем
+			if isBase64 {
+				decoded, err := base64.StdEncoding.DecodeString(string(data))
+				if err != nil {
+					return nil, fmt.Errorf("decode attachment base64: %w", err)
+				}
+				data = decoded
+			}
 			attachments = append(attachments, data)
 		}
 	}
