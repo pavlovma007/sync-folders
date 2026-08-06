@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -33,6 +34,9 @@ type Client struct {
 	// мимо Wrapper нельзя — иначе положенный item нельзя отдать по сети.
 	store   *bep44.Wrapper
 	timeout time.Duration
+	// done закрывается в Close, чтобы остановить горутину логирования
+	// прогресса bootstrap (не допускает утечку при раннем выходе).
+	done chan struct{}
 }
 
 // NewClient создаёт DHT-клиент, подключённый к Mainline DHT.
@@ -59,11 +63,40 @@ func NewClient() (*Client, error) {
 		return nil, fmt.Errorf("dht new server: %w", err)
 	}
 
-	return &Client{
+	c := &Client{
 		server:  s,
 		store:   bep44.NewWrapper(mem, exp),
 		timeout: 30 * time.Second,
-	}, nil
+		done:    make(chan struct{}),
+	}
+	c.logBootstrap()
+	return c, nil
+}
+
+// logBootstrap запускает фоновую горутину, которая раз в 3 секунды логирует
+// прогресс bootstrap таблицы маршрутизации: сколько нод найдено и сколько из
+// них "good" (ответили на последний запрос). Логирование прекращается, когда
+// набрано достаточно good-нод (20) или когда клиент закрыт.
+func (c *Client) logBootstrap() {
+	go func() {
+		ticker := time.NewTicker(3 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-c.done:
+				return
+			case <-ticker.C:
+				st := c.server.Stats()
+				if st.Nodes > 0 {
+					log.Printf("[dht] bootstrap: %d nodes (%d good)", st.Nodes, st.GoodNodes)
+				}
+				if st.GoodNodes >= 20 {
+					log.Printf("[dht] bootstrap: done (%d good nodes)", st.GoodNodes)
+					return
+				}
+			}
+		}
+	}()
 }
 
 // Put публикует mutable item в DHT (без внешнего контекста).
@@ -216,9 +249,15 @@ func itemValue(v interface{}) ([]byte, bool) {
 	return nil, false
 }
 
-// Close останавливает DHT-сервер.
+// Close останавливает DHT-сервер и фоновые горутины (в т.ч. логирование
+// bootstrap). Безопасен для клиентов, созданных в тестах без сервера.
 func (c *Client) Close() error {
-	c.server.Close()
+	if c.done != nil {
+		close(c.done)
+	}
+	if c.server != nil {
+		c.server.Close()
+	}
 	return nil
 }
 

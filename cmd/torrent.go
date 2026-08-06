@@ -4,11 +4,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
+	"sync-folders/db"
 	"sync-folders/dht"
 )
 
@@ -68,6 +73,18 @@ func handleDHT(args []string) {
 		}
 		value := args[5]
 
+		// Сначала пробуем делегировать запущенному демону (его bootstrap уже
+		// прогрет). Если демона нет или он вернул ошибку — работаем напрямую.
+		if body, ok := tryDaemonDHT("put",
+			"pub", hex.EncodeToString(key),
+			"priv", hex.EncodeToString(priv),
+			"salt", salt,
+			"seq", strconv.FormatInt(seq, 10),
+			"value", value); ok {
+			fmt.Printf("Published via daemon (seq=%d, salt=%s): %s\n", seq, salt, body)
+			return
+		}
+
 		client, err := dht.NewClient()
 		if err != nil {
 			log.Fatalf("DHT client: %v", err)
@@ -87,6 +104,13 @@ func handleDHT(args []string) {
 		}
 		key := mustDecodeHex(args[1])
 		salt := args[2]
+
+		// Сначала пробуем делегировать запущенному демону (прогретый bootstrap
+		// существенно ускоряет поиск). Если демона нет — работаем напрямую.
+		if body, ok := tryDaemonDHT("get", "pub", hex.EncodeToString(key), "salt", salt); ok {
+			fmt.Print(body)
+			return
+		}
 
 		client, err := dht.NewClient()
 		if err != nil {
@@ -153,6 +177,60 @@ func mustDecodeHex(s string) []byte {
 		return []byte(s)
 	}
 	return decoded
+}
+
+// tryDaemonDHT пытается делегировать DHT-операцию запущенному демону.
+// Координаты демона (pid, port) берутся из БД (записывает core.Daemon при
+// старте). Если процесс жив и HTTP-запрос к /dht/<method> вернул 200 OK —
+// возвращает тело ответа и true. Иначе — false (вызывающий работает напрямую).
+// params — пары "ключ", "значение" для query-строки.
+func tryDaemonDHT(method string, params ...string) (string, bool) {
+	j, err := db.Open()
+	if err != nil {
+		return "", false
+	}
+	pid, port := j.GetDaemonInfo()
+	j.Close()
+
+	if pid == 0 || !processExists(pid) {
+		return "", false
+	}
+
+	u := url.URL{
+		Scheme: "http",
+		Host:   fmt.Sprintf("127.0.0.1:%d", port),
+		Path:   "/dht/" + method,
+	}
+	q := u.Query()
+	for i := 0; i+1 < len(params); i += 2 {
+		q.Set(params[i], params[i+1])
+	}
+	u.RawQuery = q.Encode()
+
+	resp, err := http.Get(u.String())
+	if err != nil {
+		return "", false
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", false
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", false
+	}
+	return string(body), true
+}
+
+// processExists проверяет, жив ли процесс с данным PID.
+// syscall.Kill(pid, 0) не отправляет сигнал, а лишь проверяет существование
+// процесса (Unix-специфично; этот пакет нацелен на Linux).
+func processExists(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	return syscall.Kill(pid, 0) == nil
 }
 
 func handleCLI(args []string) bool {

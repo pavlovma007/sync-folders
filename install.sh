@@ -160,6 +160,30 @@ main() {
         $SUDO wget -q -O "$dest_file" "$url"
     fi
 
+    # Verify checksum
+    info "Verifying checksum..."
+    checksum_url="${url}.sha256"
+    checksum_file=$(mktemp)
+    if [ "$downloader" = "curl" ]; then
+        $SUDO curl -fsSL -o "$checksum_file" "$checksum_url" 2>/dev/null || true
+    else
+        $SUDO wget -q -O "$checksum_file" "$checksum_url" 2>/dev/null || true
+    fi
+
+    if [ -s "$checksum_file" ]; then
+        if ! echo "$(cat "$checksum_file")  $dest_file" | sha256sum -c --status; then
+            warn "Checksum verification FAILED"
+            warn "  Downloaded: $(sha256sum "$dest_file" | cut -d' ' -f1)"
+            warn "  Expected:   $(cat "$checksum_file")"
+            rm -f "$checksum_file"
+            exit 1
+        fi
+        info "Checksum OK"
+        rm -f "$checksum_file"
+    else
+        warn "No checksum file found at $checksum_url (skipping verification)"
+    fi
+
     # Проверка: файл должен быть ELF-бинарником
     if file "$dest_file" | grep -qi "ELF\|executable\|Mach-O"; then
         :

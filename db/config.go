@@ -3,6 +3,7 @@ package db
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 )
 
 // FolderRecord представляет папку в БД.
@@ -45,8 +46,49 @@ func initConfigTables(db *Journal) error {
 			sync_send_filter TEXT DEFAULT '',
 			sync_recv_filter TEXT DEFAULT ''
 		);
+
+		CREATE TABLE IF NOT EXISTS settings (
+			key   TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		);
 	`)
 	return err
+}
+
+// ─── Settings (key-value) ───────────────────────────────────
+
+// GetSetting возвращает строковое значение настройки (пустая строка, если нет).
+func (j *Journal) GetSetting(key string) string {
+	var v string
+	err := j.db.QueryRow("SELECT value FROM settings WHERE key = ?", key).Scan(&v)
+	if err != nil {
+		return ""
+	}
+	return v
+}
+
+// SetSetting сохраняет строковое значение настройки.
+func (j *Journal) SetSetting(key, value string) error {
+	_, err := j.db.Exec("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", key, value)
+	return err
+}
+
+// GetWebUIPort возвращает сохранённый порт Web UI (0 — не задан).
+func (j *Journal) GetWebUIPort() int {
+	v := j.GetSetting("webui_port")
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// SetWebUIPort сохраняет порт Web UI.
+func (j *Journal) SetWebUIPort(port int) error {
+	return j.SetSetting("webui_port", strconv.Itoa(port))
 }
 
 // ─── Folders ───────────────────────────────────────────────

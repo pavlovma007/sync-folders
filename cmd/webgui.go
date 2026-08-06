@@ -5,14 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"sync-folders/core"
+	"sync-folders/db"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"gopkg.in/yaml.v3"
 )
 
@@ -27,6 +31,8 @@ func RunGUI() {
 	mux.HandleFunc("/api/config/add", handleConfigAdd)
 	mux.HandleFunc("/api/config/remove", handleConfigRemove)
 	mux.HandleFunc("/api/config/download", handleConfigDownload)
+	mux.HandleFunc("/sync-folders-ping", handlePing)
+	mux.HandleFunc("/ws", handleWebSocket)
 	mux.HandleFunc("/", handleIndex)
 
 	lastPing := time.Now()
@@ -35,13 +41,13 @@ func RunGUI() {
 		jsonResponse(w, map[string]string{"status": "ok"})
 	})
 
-	// Случайный свободный порт
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Cannot find free port: %v\n", err)
-		os.Exit(1)
+	// Поиск порта: сначала сохранённый, затем свободный в диапазоне.
+	// Если порт занят нашим же процессом — уже запущен другой Web UI.
+	listener, port := findAndBindPort()
+	if listener == nil {
+		fmt.Println("Web UI already running")
+		return
 	}
-	port := listener.Addr().(*net.TCPAddr).Port
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 
 	server := &http.Server{Addr: addr, Handler: mux}
@@ -50,6 +56,24 @@ func RunGUI() {
 	go func() {
 		if err := server.Serve(listener); err != http.ErrServerClosed {
 			fmt.Fprintf(os.Stderr, "GUI error: %v\n", err)
+		}
+	}()
+
+	// Heartbeat: помечаем себя как живой процесс Web UI
+	go func() {
+		if j, err := db.Open(); err == nil {
+			j.Heartbeat(os.Getpid(), "webui", "")
+			j.Close()
+		}
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			j, err := db.Open()
+			if err != nil {
+				continue
+			}
+			j.Heartbeat(os.Getpid(), "webui", "")
+			j.Close()
 		}
 	}()
 
@@ -92,6 +116,120 @@ func openBrowser(url string) {
 		exec.Command("open", url).Start()
 	case "windows":
 		exec.Command("cmd", "/c", "start", url).Start()
+	}
+}
+
+// version — версия приложения, используется в ping-ответе.
+var version = "0.1"
+
+// handlePing отвечает на запрос уникальной строкой, чтобы другие процессы
+// могли распознать «наш» Web UI на занятом порту.
+func handlePing(w http.ResponseWriter, r *http.Request) {
+	fmt.Fprintf(w, "sync-folders v%s pid=%d", version, os.Getpid())
+}
+
+// findAndBindPort пытается занять порт для Web UI. Сначала пробует
+// сохранённый в БД порт, затем ищет свободный в диапазоне 9123–9149.
+// Возвращает nil, если все порты заняты нашими же процессами.
+func findAndBindPort() (net.Listener, int) {
+	j, err := db.Open()
+	if err != nil {
+		j = nil // fallback: продолжаем без БД
+	}
+	if j != nil {
+		defer j.Close()
+	}
+
+	// 1. Try saved port from DB
+	savedPort := 0
+	if j != nil {
+		savedPort = j.GetWebUIPort()
+	}
+
+	if savedPort > 0 {
+		if ln := tryBind(savedPort); ln != nil {
+			return ln, savedPort
+		}
+		// Port saved but taken — check if it's our brother
+		if pingOurProcess(savedPort) {
+			log.Printf("[webui] port %d taken by another sync-folders process", savedPort)
+			return nil, 0
+		}
+	}
+
+	// 2. Search for free port
+	for port := 9123; port < 9150; port++ {
+		if ln := tryBind(port); ln != nil {
+			if j != nil {
+				j.SetWebUIPort(port)
+			}
+			return ln, port
+		}
+		if pingOurProcess(port) {
+			log.Printf("[webui] port %d taken by brother", port)
+			return nil, 0
+		}
+	}
+	return nil, 0
+}
+
+// tryBind пробует занять TCP-порт; возвращает nil, если порт занят.
+func tryBind(port int) net.Listener {
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return nil
+	}
+	return ln
+}
+
+// pingOurProcess проверяет, отвечает ли на порту наш Web UI.
+func pingOurProcess(port int) bool {
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/sync-folders-ping", port))
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 100))
+	return strings.HasPrefix(string(body), "sync-folders")
+}
+
+// upgrader разрешает WebSocket-подключения с любого origin.
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
+
+// handleWebSocket отдаёт браузеру текущие статусы, журнал и активные процессы
+// каждые 5 секунд, пока вкладка открыта.
+func handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		j, _ := db.Open()
+		if j != nil {
+			statuses, _ := core.GetAllStatuses()
+			journalTail := j.GetJournalTail(20)
+			recentFiles := j.GetRecentFiles(10)
+			active := j.GetActiveProcesses()
+			j.Close()
+
+			payload := map[string]interface{}{
+				"statuses":         statuses,
+				"journal_tail":     journalTail,
+				"recent_files":     recentFiles,
+				"active_processes": active,
+				"server_pid":       os.Getpid(),
+			}
+			if err := conn.WriteJSON(payload); err != nil {
+				return
+			}
+		}
 	}
 }
 

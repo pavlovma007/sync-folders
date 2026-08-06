@@ -393,20 +393,20 @@ func newTorrentFromConfig(cfg map[string]string) (*TorrentTransport, error) {
 	if pk := cfg["dht_public_key"]; pk != "" {
 		decoded, err := hex.DecodeString(pk)
 		if err != nil {
-			return nil, fmt.Errorf("dht_public_key: invalid hex: %w", err)
+			return nil, fmt.Errorf("dht_public_key: invalid hex (expected 64 hex chars = 32 bytes): %w", err)
 		}
 		if len(decoded) != 32 {
-			return nil, fmt.Errorf("dht_public_key: expected 32 bytes, got %d", len(decoded))
+			return nil, fmt.Errorf("dht_public_key: expected 32 bytes (64 hex chars), got %d bytes (%d hex chars)", len(decoded), len(pk))
 		}
 		tc.DHTKey = decoded
 	}
 	if priv := cfg["dht_private_key"]; priv != "" {
 		decoded, err := hex.DecodeString(priv)
 		if err != nil {
-			return nil, fmt.Errorf("dht_private_key: invalid hex: %w", err)
+			return nil, fmt.Errorf("dht_private_key: invalid hex (expected 128 hex chars = 64 bytes): %w", err)
 		}
 		if len(decoded) != 64 {
-			return nil, fmt.Errorf("dht_private_key: expected 64 bytes, got %d", len(decoded))
+			return nil, fmt.Errorf("dht_private_key: expected 64 bytes (128 hex chars), got %d bytes (%d hex chars)", len(decoded), len(priv))
 		}
 		tc.DHTPrivKey = decoded
 	}

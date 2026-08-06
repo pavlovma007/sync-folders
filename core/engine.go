@@ -1,11 +1,16 @@
 package core
 
 import (
+	"encoding/hex"
 	"fmt"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync-folders/db"
+	"sync-folders/dht"
 	"sync-folders/filter"
 	"sync-folders/transport"
 	"time"
@@ -181,10 +186,23 @@ func toTransportFiles(files []FileInfo) []transport.FileInfo {
 }
 
 // Daemon запускает периодическую синхронизацию всех конфигов.
+//
+// В постоянном режиме (interval > 0) дополнительно поднимает DHT-клиент
+// (bootstrap один раз) и HTTP-сервер с endpoint'ами /dht/put и /dht/get:
+// CLI-команды `sync-folders dht ...` делегируют операции запущенному демону
+// (см. cmd/torrent.go), переиспользуя его прогретый bootstrap.
 func Daemon(interval time.Duration) error {
 	cfg, err := LoadConfig()
 	if err != nil {
 		return err
+	}
+
+	// DHT-демон поднимаем только для постоянного режима: одноразовые синки
+	// (sync --all, GUI-кнопка) не должны занимать порт и тратить время
+	// на 10-30-секундный bootstrap без пользы.
+	stopDHT := func() {}
+	if interval != 0 {
+		stopDHT = startDHTDaemon()
 	}
 
 	for name, sc := range cfg.Syncs {
@@ -201,6 +219,7 @@ func Daemon(interval time.Duration) error {
 	if interval == 0 {
 		return nil
 	}
+	defer stopDHT()
 
 	ticker := time.NewTicker(interval)
 	for range ticker.C {
@@ -217,6 +236,77 @@ func Daemon(interval time.Duration) error {
 		}
 	}
 	return nil
+}
+
+// startDHTDaemon поднимает DHT-клиент (однократный bootstrap) и HTTP-сервер
+// на случайном порту 127.0.0.1 с endpoint'ами /dht/put и /dht/get. Пид и порт
+// сохраняются в БД, чтобы CLI мог делегировать DHT-команды демону
+// (см. tryDaemonDHT в cmd/torrent.go). Возвращает stop-функцию.
+func startDHTDaemon() func() {
+	dc, err := dht.NewClient()
+	if err != nil {
+		log.Printf("[daemon] DHT: %v", err)
+		return func() {}
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/dht/put", func(w http.ResponseWriter, r *http.Request) {
+		pub, _ := hex.DecodeString(r.URL.Query().Get("pub"))
+		priv, _ := hex.DecodeString(r.URL.Query().Get("priv"))
+		salt := r.URL.Query().Get("salt")
+		seq, _ := strconv.ParseInt(r.URL.Query().Get("seq"), 10, 64)
+		value := r.URL.Query().Get("value")
+
+		if err := dc.Put(pub, priv, salt, seq, []byte(value)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Write([]byte("ok"))
+	})
+
+	mux.HandleFunc("/dht/get", func(w http.ResponseWriter, r *http.Request) {
+		pub, _ := hex.DecodeString(r.URL.Query().Get("pub"))
+		salt := r.URL.Query().Get("salt")
+
+		value, seq, err := dc.Get(pub, salt)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprintf(w, "seq=%d\nvalue=%s\n", seq, string(value))
+	})
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		dc.Close()
+		log.Printf("[daemon] DHT http listen: %v", err)
+		return func() {}
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	srv := &http.Server{Handler: mux}
+	go func() {
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+			log.Printf("[daemon] DHT http: %v", err)
+		}
+	}()
+
+	// Сохраняем координаты демона, чтобы CLI мог их найти.
+	if j, openErr := db.Open(); openErr == nil {
+		j.SetDaemonInfo(os.Getpid(), port)
+		j.Close()
+	}
+
+	log.Printf("[daemon] DHT ready: pid=%d port=%d", os.Getpid(), port)
+
+	return func() {
+		srv.Close()
+		dc.Close()
+		if j, openErr := db.Open(); openErr == nil {
+			j.ClearDaemonInfo()
+			j.Close()
+		}
+	}
 }
 
 // logSyncToJournal открывает журнал и записывает событие синхронизации.
